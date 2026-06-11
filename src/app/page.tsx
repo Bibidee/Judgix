@@ -5,27 +5,30 @@ import Link from "next/link";
 import { CampaignCard } from "@/components/campaign/CampaignCard";
 import { fetchCampaign, fetchCampaignReview, fetchCampaignIds, fetchCreatorReputation } from "@/lib/genlayer/contract";
 import { Campaign, CampaignReview } from "@/types";
-import { scoreColor } from "@/lib/scoring";
+import { scoreColor, shortAddress } from "@/lib/scoring";
+import { STATUS_META } from "@/lib/constants";
 
 function HeroVerdictCard({ featured, reviewById, loading }: { featured: Campaign[]; reviewById: Record<string, CampaignReview>; loading: boolean }) {
-  // Build a list of every reviewed campaign and rotate through them.
-  const reviewed = featured.filter(c => reviewById[c.id]);
+  // Rotate through every campaign — reviewed ones show their verdict, the
+  // rest show the on-chain status. Reviewed campaigns are sorted first so
+  // the first frame is always informative when at least one verdict exists.
+  const ordered = [...featured].sort((a, b) => (reviewById[b.id] ? 1 : 0) - (reviewById[a.id] ? 1 : 0));
   const [i, setI] = useState(0);
   const [phase, setPhase] = useState<"in" | "out">("in");
 
   useEffect(() => {
-    if (reviewed.length <= 1) return;
+    if (ordered.length <= 1) return;
     const timer = setInterval(() => {
       setPhase("out");
       setTimeout(() => {
-        setI(prev => (prev + 1) % reviewed.length);
+        setI(prev => (prev + 1) % ordered.length);
         setPhase("in");
       }, 350);
     }, 4500);
     return () => clearInterval(timer);
-  }, [reviewed.length]);
+  }, [ordered.length]);
 
-  if (loading && reviewed.length === 0) {
+  if (loading && ordered.length === 0) {
     return (
       <div className="paper-card !bg-cloud p-6 text-deeptext">
         <div className="flex items-center gap-2">
@@ -46,13 +49,13 @@ function HeroVerdictCard({ featured, reviewById, loading }: { featured: Campaign
     );
   }
 
-  if (reviewed.length === 0) {
+  if (ordered.length === 0) {
     return (
       <div className="paper-card !bg-cloud p-6 text-deeptext">
         <div className="case-stamp text-slate">Live on the Studio Network</div>
-        <h3 className="font-serif-display text-2xl mt-2">No verdicts yet</h3>
+        <h3 className="font-serif-display text-2xl mt-2">No case files yet</h3>
         <p className="text-sm mt-3 text-deeptext/80">
-          As creators submit campaigns and validators reach consensus, recent verdicts will rotate
+          As creators open case files and validators reach consensus, recent activity will rotate
           through this card in real time.
         </p>
         <Link href="/submit" className="inline-block mt-4 case-stamp text-evidence hover:underline">
@@ -62,9 +65,10 @@ function HeroVerdictCard({ featured, reviewById, loading }: { featured: Campaign
     );
   }
 
-  const current = reviewed[i % reviewed.length];
-  const review = reviewById[current.id]!;
-  const color = scoreColor(review.authenticityScore);
+  const current = ordered[i % ordered.length];
+  const review = reviewById[current.id];
+  const color = review ? scoreColor(review.authenticityScore) : "#6D5A7D";
+  const statusMeta = STATUS_META[current.status] || { label: current.status, color: "#6D5A7D", bg: "#DCE9F2" };
 
   return (
     <div className="paper-card !bg-cloud p-6 text-deeptext relative overflow-hidden">
@@ -77,13 +81,13 @@ function HeroVerdictCard({ featured, reviewById, loading }: { featured: Campaign
           </span>
           <span className="case-stamp text-slate">Live · GenLayer Studio Network</span>
         </div>
-        {reviewed.length > 1 && (
-          <div className="flex gap-1.5">
-            {reviewed.map((_, idx) => (
+        {ordered.length > 1 && (
+          <div className="flex gap-1.5 max-w-[40%] flex-wrap justify-end">
+            {ordered.map((_, idx) => (
               <span
                 key={idx}
                 className="w-1.5 h-1.5 rounded-full transition-all"
-                style={{ background: idx === i % reviewed.length ? color : "#DCE9F2" }}
+                style={{ background: idx === i % ordered.length ? color : "#DCE9F2" }}
               />
             ))}
           </div>
@@ -101,25 +105,51 @@ function HeroVerdictCard({ featured, reviewById, loading }: { featured: Campaign
           transform: phase === "in" ? "translateY(0)" : "translateY(6px)",
         }}
       >
-        <div className="case-stamp text-slate">Case file · {current.id}</div>
-        <h3 className="font-serif-display text-2xl mt-2 line-clamp-2">{current.title}</h3>
-        <div className="mt-4 flex items-center justify-between border-y border-mist py-3">
-          <div>
-            <div className="case-stamp text-slate">Verdict</div>
-            <div className="font-serif-display text-xl" style={{ color }}>
-              {review.verdict.replace(/_/g, " ")}
-            </div>
-          </div>
-          <div className="text-right">
-            <div className="case-stamp text-slate">Integrity</div>
-            <div className="font-mono text-3xl" style={{ color }}>
-              {review.authenticityScore}/100
-            </div>
-          </div>
+        <div className="flex items-center justify-between">
+          <div className="case-stamp text-slate">Case file · {current.id}</div>
+          <span className="case-stamp px-2 py-0.5 rounded" style={{ background: statusMeta.bg, color: statusMeta.color }}>
+            {statusMeta.label}
+          </span>
         </div>
-        <p className="mt-3 text-sm line-clamp-3">
-          {review.recommendedAction || review.reasoningSummary || "Verdict produced by GenLayer consensus over submitted evidence."}
-        </p>
+        <h3 className="font-serif-display text-2xl mt-2 line-clamp-2">{current.title}</h3>
+
+        {review ? (
+          <>
+            <div className="mt-4 flex items-center justify-between border-y border-mist py-3">
+              <div>
+                <div className="case-stamp text-slate">Verdict</div>
+                <div className="font-serif-display text-xl" style={{ color }}>
+                  {review.verdict.replace(/_/g, " ")}
+                </div>
+              </div>
+              <div className="text-right">
+                <div className="case-stamp text-slate">Integrity</div>
+                <div className="font-mono text-3xl" style={{ color }}>
+                  {review.authenticityScore}/100
+                </div>
+              </div>
+            </div>
+            <p className="mt-3 text-sm line-clamp-3">
+              {review.recommendedAction || review.reasoningSummary || "Verdict produced by GenLayer consensus over submitted evidence."}
+            </p>
+          </>
+        ) : (
+          <>
+            <div className="mt-4 flex items-center justify-between border-y border-mist py-3">
+              <div>
+                <div className="case-stamp text-slate">Beneficiary</div>
+                <div className="font-serif-display text-lg">{current.beneficiary || "—"}</div>
+              </div>
+              <div className="text-right">
+                <div className="case-stamp text-slate">Creator</div>
+                <div className="font-mono text-sm">{shortAddress(current.creator)}</div>
+              </div>
+            </div>
+            <p className="mt-3 text-sm text-deeptext/80 line-clamp-3">
+              {current.problemStatement || current.story || "Awaiting GenLayer consensus review."}
+            </p>
+          </>
+        )}
       </Link>
     </div>
   );
