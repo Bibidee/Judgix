@@ -94,7 +94,7 @@ export default function CreatorPage({ params }: { params: Promise<{ address: str
           />
         ) : (
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-5 mt-6">
-            {campaigns.map(c => <CampaignCard key={c.id} campaign={c} review={reviews[c.id]} />)}
+            {campaigns.map(c => <CampaignCard key={c.id} campaign={c} review={reviews[c.id]} reputation={reputation ?? undefined} />)}
           </div>
         )}
       </section>

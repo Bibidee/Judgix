@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { CampaignCard } from "@/components/campaign/CampaignCard";
 import { CATEGORIES } from "@/lib/constants";
 import { knownCampaignIds } from "@/lib/storage/drafts";
-import { fetchCampaign, fetchCampaignReview, fetchCampaignIds } from "@/lib/genlayer/contract";
+import { fetchCampaign, fetchCampaignReview, fetchCampaignIds, fetchCreatorReputation } from "@/lib/genlayer/contract";
 import { Campaign, CampaignReview } from "@/types";
 import { EmptyState } from "@/components/ui/EmptyState";
 
@@ -24,6 +24,7 @@ export default function CampaignsPage() {
 
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [reviews, setReviews] = useState<Record<string, CampaignReview>>({});
+  const [reputations, setReputations] = useState<Record<string, any>>({});
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -43,6 +44,17 @@ export default function CampaignsPage() {
         }
         setCampaigns(fetched);
         setReviews(revs);
+
+        // Fetch reputation once per unique creator (in parallel)
+        const uniqueCreators = Array.from(new Set(fetched.map(c => c.creator).filter(Boolean)));
+        const repPairs = await Promise.all(
+          uniqueCreators.map(addr =>
+            fetchCreatorReputation(addr).then(r => [addr, r] as const).catch(() => [addr, null] as const),
+          ),
+        );
+        const repMap: Record<string, any> = {};
+        for (const [addr, rep] of repPairs) if (rep) repMap[addr] = rep;
+        setReputations(repMap);
       } finally {
         setLoading(false);
       }
@@ -139,7 +151,7 @@ export default function CampaignsPage() {
         )
       ) : (
         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-5 mt-6">
-          {list.map(c => <CampaignCard key={c.id} campaign={c} review={reviews[c.id]} />)}
+          {list.map(c => <CampaignCard key={c.id} campaign={c} review={reviews[c.id]} reputation={reputations[c.creator]} />)}
         </div>
       )}
     </div>

@@ -5,6 +5,27 @@ import { localnet } from "genlayer-js/chains";
 import type { Account, Address } from "viem";
 
 /**
+ * `genlayer-js` (via viem) probes Ethereum-style RPC methods that the GenLayer
+ * Studio node doesn't implement (eth_fillTransaction, eth_getTransactionCount on
+ * unknown wallet, ...). It logs each failed probe with console.error even though
+ * the SDK then falls back to the correct gen_* method and the transaction
+ * succeeds. We filter only those benign "Method not found" messages and let
+ * every other error through.
+ */
+if (typeof window !== "undefined" && !(window as any).__judgixConsoleFiltered) {
+  (window as any).__judgixConsoleFiltered = true;
+  const origError = console.error.bind(console);
+  console.error = (...args: any[]) => {
+    const head = String(args[0] ?? "");
+    if (
+      /Error fetching .* from GenLayer RPC/.test(head)
+      && /Method not found/.test(args.map(a => String(a?.message ?? a)).join(" "))
+    ) return;
+    return origError(...args);
+  };
+}
+
+/**
  * GenLayer Studio Network (id 6199). We piggyback on the localnet chain definition
  * (which carries the consensus contract addresses the SDK needs) but override the
  * endpoint, id, and name to point at the public studio network.

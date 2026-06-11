@@ -3,12 +3,111 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { CampaignCard } from "@/components/campaign/CampaignCard";
-import { fetchCampaign, fetchCampaignReview, fetchCampaignIds } from "@/lib/genlayer/contract";
+import { fetchCampaign, fetchCampaignReview, fetchCampaignIds, fetchCreatorReputation } from "@/lib/genlayer/contract";
 import { Campaign, CampaignReview } from "@/types";
+import { scoreColor } from "@/lib/scoring";
+
+function HeroVerdictCard({ featured, reviewById }: { featured: Campaign[]; reviewById: Record<string, CampaignReview> }) {
+  // Build a list of every reviewed campaign and rotate through them.
+  const reviewed = featured.filter(c => reviewById[c.id]);
+  const [i, setI] = useState(0);
+  const [phase, setPhase] = useState<"in" | "out">("in");
+
+  useEffect(() => {
+    if (reviewed.length <= 1) return;
+    const timer = setInterval(() => {
+      setPhase("out");
+      setTimeout(() => {
+        setI(prev => (prev + 1) % reviewed.length);
+        setPhase("in");
+      }, 350);
+    }, 4500);
+    return () => clearInterval(timer);
+  }, [reviewed.length]);
+
+  if (reviewed.length === 0) {
+    return (
+      <div className="paper-card !bg-cloud p-6 text-deeptext">
+        <div className="case-stamp text-slate">Live on the Studio Network</div>
+        <h3 className="font-serif-display text-2xl mt-2">No verdicts yet</h3>
+        <p className="text-sm mt-3 text-deeptext/80">
+          As creators submit campaigns and validators reach consensus, recent verdicts will rotate
+          through this card in real time.
+        </p>
+        <Link href="/submit" className="inline-block mt-4 case-stamp text-evidence hover:underline">
+          Open the first case file →
+        </Link>
+      </div>
+    );
+  }
+
+  const current = reviewed[i % reviewed.length];
+  const review = reviewById[current.id]!;
+  const color = scoreColor(review.authenticityScore);
+
+  return (
+    <div className="paper-card !bg-cloud p-6 text-deeptext relative overflow-hidden">
+      {/* Header: live indicator + rotation dots */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="relative flex w-2.5 h-2.5">
+            <span className="absolute inline-flex h-full w-full rounded-full bg-mint opacity-75 animate-ping"></span>
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-mint"></span>
+          </span>
+          <span className="case-stamp text-slate">Live · GenLayer Studio Network</span>
+        </div>
+        {reviewed.length > 1 && (
+          <div className="flex gap-1.5">
+            {reviewed.map((_, idx) => (
+              <span
+                key={idx}
+                className="w-1.5 h-1.5 rounded-full transition-all"
+                style={{ background: idx === i % reviewed.length ? color : "#DCE9F2" }}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Animated card body */}
+      <Link
+        key={current.id}
+        href={`/campaigns/${current.id}`}
+        className="block mt-3"
+        style={{
+          transition: "opacity 350ms ease, transform 350ms ease",
+          opacity: phase === "in" ? 1 : 0,
+          transform: phase === "in" ? "translateY(0)" : "translateY(6px)",
+        }}
+      >
+        <div className="case-stamp text-slate">Case file · {current.id}</div>
+        <h3 className="font-serif-display text-2xl mt-2 line-clamp-2">{current.title}</h3>
+        <div className="mt-4 flex items-center justify-between border-y border-mist py-3">
+          <div>
+            <div className="case-stamp text-slate">Verdict</div>
+            <div className="font-serif-display text-xl" style={{ color }}>
+              {review.verdict.replace(/_/g, " ")}
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="case-stamp text-slate">Integrity</div>
+            <div className="font-mono text-3xl" style={{ color }}>
+              {review.authenticityScore}/100
+            </div>
+          </div>
+        </div>
+        <p className="mt-3 text-sm line-clamp-3">
+          {review.recommendedAction || review.reasoningSummary || "Verdict produced by GenLayer consensus over submitted evidence."}
+        </p>
+      </Link>
+    </div>
+  );
+}
 
 export default function LandingPage() {
   const [featured, setFeatured] = useState<Campaign[]>([]);
   const [reviewById, setReviewById] = useState<Record<string, CampaignReview>>({});
+  const [reputations, setReputations] = useState<Record<string, any>>({});
 
   useEffect(() => {
     (async () => {
@@ -24,6 +123,13 @@ export default function LandingPage() {
       }
       setFeatured(out);
       setReviewById(rev);
+      const uniqueCreators = Array.from(new Set(out.map(c => c.creator).filter(Boolean)));
+      const repPairs = await Promise.all(
+        uniqueCreators.map(addr => fetchCreatorReputation(addr).then(r => [addr, r] as const).catch(() => [addr, null] as const)),
+      );
+      const repMap: Record<string, any> = {};
+      for (const [addr, rep] of repPairs) if (rep) repMap[addr] = rep;
+      setReputations(repMap);
     })();
   }, []);
 
@@ -52,23 +158,7 @@ export default function LandingPage() {
             </div>
           </div>
           <div className="md:col-span-5">
-            <div className="paper-card !bg-cloud p-6 text-deeptext">
-              <div className="case-stamp text-slate">How a verdict reads</div>
-              <h3 className="font-serif-display text-2xl mt-2">Donor Advisory · sample</h3>
-              <div className="mt-4 flex items-center justify-between border-y border-mist py-3">
-                <div>
-                  <div className="case-stamp text-slate">Verdict</div>
-                  <div className="font-serif-display text-xl text-[#0F5E4A]">VERIFIED</div>
-                </div>
-                <div className="text-right">
-                  <div className="case-stamp text-slate">Integrity</div>
-                  <div className="font-mono text-3xl text-[#0F5E4A]">89/100</div>
-                </div>
-              </div>
-              <p className="mt-3 text-sm">
-                Independent evidence corroborates the story. Donors may contribute with normal due diligence.
-              </p>
-            </div>
+            <HeroVerdictCard featured={featured} reviewById={reviewById} />
           </div>
         </div>
       </section>
@@ -135,7 +225,7 @@ export default function LandingPage() {
             <Link href="/campaigns" className="text-evidence text-sm hover:underline">All campaigns →</Link>
           </div>
           <div className="grid md:grid-cols-3 gap-5">
-            {featured.map(c => <CampaignCard key={c.id} campaign={c} review={reviewById[c.id]} />)}
+            {featured.map(c => <CampaignCard key={c.id} campaign={c} review={reviewById[c.id]} reputation={reputations[c.creator]} />)}
           </div>
         </section>
       )}

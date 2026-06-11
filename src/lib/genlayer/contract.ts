@@ -46,9 +46,23 @@ async function writeMethod(
     value: BigInt(0),
   });
   opts.onHash?.(hash);
+
   let receipt: any = null;
   if (opts.awaitReceipt !== false) {
-    receipt = await client.waitForTransactionReceipt({ hash });
+    try {
+      receipt = await client.waitForTransactionReceipt({ hash });
+    } catch (err) {
+      // genlayer-js can throw a calldata decoder error while parsing the receipt
+      // even when the transaction itself was committed on-chain. The hash is the
+      // source of truth — callers (e.g. submit / update / flag pages) confirm
+      // success by polling contract state. Swallow the decode error here.
+      const msg = String((err as any)?.message || err);
+      if (!/out of bounds|position|invalid (utf-8|byte)|unexpected end/i.test(msg)) {
+        throw err;
+      }
+      // best-effort status read; ignore failures
+      receipt = null;
+    }
   }
   return { hash, receipt };
 }
