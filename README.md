@@ -12,13 +12,13 @@ A GenLayer-powered legitimacy and authenticity layer for crowdfunding campaigns.
 ## Network and contract
 
 - **Network**: GenLayer Studio Network — chain id `6199`, symbol `GEN`, endpoint `https://studio.genlayer.com/api`.
-- **Contract**: `0x53Fa17B148006bd59B2484ef8414840ECfaAfd06`.
+- **Contract**: `0xE0e599492dF311a9152b87F27Cf6C179fC72cC6B`.
 - **CORS**: the browser cannot reach Studio directly. `next.config.js` rewrites `/api/genlayer/*` → `${GENLAYER_UPSTREAM}/*` server-side, so all SDK calls funnel through the Next.js process.
 
 ## Environment variables (`.env.local`)
 
 ```bash
-NEXT_PUBLIC_JUDGIX_ADDRESS=0x53Fa17B148006bd59B2484ef8414840ECfaAfd06
+NEXT_PUBLIC_JUDGIX_ADDRESS=0xE0e599492dF311a9152b87F27Cf6C179fC72cC6B
 NEXT_PUBLIC_GENLAYER_RPC=/api/genlayer
 GENLAYER_UPSTREAM=https://studio.genlayer.com/api
 NEXT_PUBLIC_DEMO_MODE=false

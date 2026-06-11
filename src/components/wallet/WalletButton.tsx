@@ -31,7 +31,7 @@ export function WalletButton() {
 
   function downloadBackup() {
     if (!privateKey || !address) return;
-    const payload = { address, privateKey, contract: "0x53Fa17B148006bd59B2484ef8414840ECfaAfd06", endpoint: JUDGIX_RPC_URL, createdAt: new Date().toISOString() };
+    const payload = { address, privateKey, contract: "0xE0e599492dF311a9152b87F27Cf6C179fC72cC6B", endpoint: JUDGIX_RPC_URL, createdAt: new Date().toISOString() };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
