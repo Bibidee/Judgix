@@ -11,6 +11,12 @@ import {
 import { generatePrivateKey } from "genlayer-js";
 import { fetchContractOwner } from "@/lib/genlayer/contract";
 
+// Configured admin/deployer fallback. The Judgix contract stores `owner` but
+// doesn't expose a public view to read it, so we accept the deployer address
+// via env. If the contract ever does expose `owner()`, fetchContractOwner()
+// takes precedence over this value.
+const CONFIGURED_ADMIN = (process.env.NEXT_PUBLIC_ADMIN_ADDRESS || "").trim() || null;
+
 type WalletState = {
   connected: boolean;
   address: string | null;
@@ -41,7 +47,12 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       setAccount(acc); setPrivKey(pk);
     }
     setAutoConnected(true);
-    fetchContractOwner().then(o => o && setOwnerAddress(o)).catch(() => {});
+    // Seed with the configured admin so the UI reacts immediately, then try
+    // the on-chain view in case the contract exposes one.
+    if (CONFIGURED_ADMIN) setOwnerAddress(CONFIGURED_ADMIN);
+    fetchContractOwner()
+      .then(o => { if (o) setOwnerAddress(o); })
+      .catch(() => {});
   }, []);
 
   const connect = useCallback(async () => {
