@@ -150,26 +150,30 @@ export async function fetchDisputeIdsForCampaign(campaignId: string): Promise<st
 
 export async function fetchUpdatesForCampaign(campaignId: string) {
   const ids = await fetchUpdateIdsForCampaign(campaignId);
-  const results = [];
-  for (const id of ids) {
-    const u = await fetchUpdate(id).catch(() => null);
-    if (!u) continue;
-    const r = await fetchUpdateReview(id).catch(() => null);
-    results.push({ ...u, review: r ?? undefined });
-  }
-  return results;
+  const results = await Promise.all(
+    ids.map(async (id) => {
+      const [u, r] = await Promise.all([
+        fetchUpdate(id).catch(() => null),
+        fetchUpdateReview(id).catch(() => null),
+      ]);
+      return u ? { ...u, review: r ?? undefined } : null;
+    }),
+  );
+  return results.filter(Boolean) as any[];
 }
 
 export async function fetchDisputesForCampaign(campaignId: string) {
   const ids = await fetchDisputeIdsForCampaign(campaignId);
-  const results = [];
-  for (const id of ids) {
-    const d = await fetchDispute(id).catch(() => null);
-    if (!d) continue;
-    const r = await fetchDisputeReview(id).catch(() => null);
-    results.push({ ...d, review: r ?? undefined });
-  }
-  return results;
+  const results = await Promise.all(
+    ids.map(async (id) => {
+      const [d, r] = await Promise.all([
+        fetchDispute(id).catch(() => null),
+        fetchDisputeReview(id).catch(() => null),
+      ]);
+      return d ? { ...d, review: r ?? undefined } : null;
+    }),
+  );
+  return results.filter(Boolean) as any[];
 }
 
 export async function fetchCreatorReputation(creator: string): Promise<AnyJson | null> {

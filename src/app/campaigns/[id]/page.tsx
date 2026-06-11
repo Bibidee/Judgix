@@ -31,27 +31,29 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
   const [notFoundState, setNotFoundState] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       setLoading(true);
       try {
         const onChain = await fetchCampaign(id);
+        if (cancelled) return;
         if (!onChain) { setNotFoundState(true); return; }
         setC(onChain);
-        const [r, ups, dps] = await Promise.all([
-          fetchCampaignReview(id).catch(() => null),
-          fetchUpdatesForCampaign(id).catch(() => []),
-          fetchDisputesForCampaign(id).catch(() => []),
-        ]);
-        setReview(r ?? null);
-        setUpdates(ups as CampaignUpdate[]);
-        setDisputes(dps as Dispute[]);
+        setLoading(false); // header can paint now — everything else streams in
+
+        // Fire each fetch independently so each section renders as soon as
+        // its own RPC returns, instead of waiting on the slowest one.
+        fetchCampaignReview(id).then(r => { if (!cancelled) setReview(r ?? null); }).catch(() => {});
+        fetchUpdatesForCampaign(id).then(u => { if (!cancelled) setUpdates(u as CampaignUpdate[]); }).catch(() => {});
+        fetchDisputesForCampaign(id).then(d => { if (!cancelled) setDisputes(d as Dispute[]); }).catch(() => {});
         if (onChain.creator) {
-          fetchCreatorReputation(onChain.creator).then(rep => setReputation(rep));
+          fetchCreatorReputation(onChain.creator).then(rep => { if (!cancelled) setReputation(rep); }).catch(() => {});
         }
-      } finally {
-        setLoading(false);
+      } catch {
+        if (!cancelled) setLoading(false);
       }
     })();
+    return () => { cancelled = true; };
   }, [id]);
 
   if (loading) {

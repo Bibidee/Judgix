@@ -311,23 +311,102 @@ const RUN_TAG = Date.now().toString(36).toUpperCase();
 let _counter = 0;
 const nextId = (prefix) => `${prefix}-${RUN_TAG}-${(++_counter).toString().padStart(3, "0")}`;
 
-function campaignPayload(overrides = {}) {
-  return JSON.stringify({
-    title: "Test campaign",
-    creator: overrides.creator || W1.account.address,
+// A small fixture set of realistic personas. Each suite picks one so the data
+// looks like real campaigns rather than synthetic placeholders.
+const PERSONAS = [
+  {
+    title: "Emergency Surgery Support for Adaeze Okonkwo",
     category: "Medical",
     country: "Nigeria",
-    funding_goal: "4500",
-    currency: "USD",
+    funding_goal: "1850000",
+    currency: "NGN",
     beneficiary: "Adaeze Okonkwo",
+    story: "Adaeze, a 34-year-old mother of two from Surulere, was diagnosed with a stage II ovarian tumour at Lagos University Teaching Hospital on 12 April 2026. The oncology team has scheduled surgery for 2 July 2026 but the hospital requires the full deposit upfront before the operating room is reserved.",
+    use_of_funds: "Surgical fees ₦1,200,000, anaesthesiology ₦150,000, six weeks of post-operative care and chemotherapy supplies ₦500,000.",
+    problem_statement: "Stage II ovarian tumour requiring surgical intervention within 30 days to prevent metastasis.",
+    who_benefits: "Adaeze Okonkwo and her two children, aged 6 and 9.",
+    timeline_of_events: "Diagnosis 2026-04-12 at LUTH. Pre-op consults 2026-05-10. Surgery scheduled 2026-07-02. Recovery 6 weeks.",
+    evidence: [{ id: "e1", type: "MEDICAL_DOCUMENT", title: "LUTH Oncology Report", description: "Redacted diagnosis report", uri: "ipfs://bafkreigadaezelut", date: "2026-04-12", sourceName: "Lagos University Teaching Hospital" }],
+    public_signals: [{ platform: "x", url: "https://x.com/adaezesupport" }],
+  },
+  {
+    title: "Final-Year Tuition Support for Daniel Mwangi",
+    category: "Education",
+    country: "Kenya",
+    funding_goal: "180000",
+    currency: "KES",
+    beneficiary: "Daniel Mwangi",
+    story: "Daniel is a final-year electrical engineering student at Kenyatta University in Nairobi. His father passed away in February 2026, leaving the family without a primary income. The remaining tuition balance and final-year examination fees must be settled before he can sit his exams in August.",
+    use_of_funds: "Tuition balance KES 140,000, examination fees KES 18,000, final-year project materials KES 22,000.",
+    problem_statement: "Outstanding tuition deadline 1 August 2026; without it Daniel cannot sit final exams.",
+    who_benefits: "Daniel Mwangi and his mother in Kiambu.",
+    timeline_of_events: "Father passed 2026-02-10. Tuition deadline 2026-08-01. Graduation expected 2026-12-15.",
+    evidence: [
+      { id: "e1", type: "SCHOOL_DOCUMENT", title: "Kenyatta University fee statement", description: "Outstanding balance letter", uri: "ipfs://bafkreigdantuit", date: "2026-04-20", sourceName: "Kenyatta University Bursar" },
+      { id: "e2", type: "REGISTRATION", title: "Enrolment letter", description: "Confirms final-year enrolment", uri: "ipfs://bafkreigdanenrl", date: "2026-01-10", sourceName: "Kenyatta University" },
+    ],
+    public_signals: [
+      { platform: "linkedin", url: "https://linkedin.com/in/daniel-mwangi" },
+      { platform: "website", url: "https://eng.ku.ac.ke/students/dmwangi" },
+    ],
+  },
+  {
+    title: "Typhoon Relief for Santos Family",
+    category: "Disaster Relief",
+    country: "Philippines",
+    funding_goal: "120000",
+    currency: "PHP",
+    beneficiary: "Maria Santos",
+    story: "The Santos family in Catbalogan, Samar lost their home in Typhoon Egay on 28 May 2026. Local barangay officials have confirmed the family of four are currently sheltering at the Catbalogan parish hall. Funds will go to materials to rebuild their nipa-hut roof and replace cooking equipment.",
+    use_of_funds: "Roofing materials PHP 60,000, cooking equipment PHP 25,000, six months of food parcels PHP 35,000.",
+    problem_statement: "Family of four displaced by Typhoon Egay; immediate shelter rebuilding required.",
+    who_benefits: "Maria Santos, her husband Rogelio, and their two children.",
+    timeline_of_events: "Typhoon 2026-05-28. Family at parish shelter since 2026-05-29. Rebuilding 2026-07-01 to 2026-08-15.",
+    evidence: [
+      { id: "e1", type: "PUBLIC_STATEMENT", title: "Barangay certification", description: "Local barangay confirms displacement", uri: "ipfs://bafkreigsantosbgy", date: "2026-05-30", sourceName: "Brgy. Catbalogan" },
+      { id: "e2", type: "NEWS_ARTICLE", title: "Typhoon Egay aftermath report", description: "Local news coverage", uri: "https://news.example.ph/typhoon-egay", date: "2026-05-29", sourceName: "Samar Times" },
+    ],
+    public_signals: [{ platform: "facebook", url: "https://facebook.com/santos.relief" }],
+  },
+  {
+    title: "Twin Premature Birth Care for Aisha Bello",
+    category: "Medical",
+    country: "Nigeria",
+    funding_goal: "2400000",
+    currency: "NGN",
+    beneficiary: "Aisha Bello",
+    story: "Aisha gave birth to twins at 28 weeks at National Hospital Abuja on 9 May 2026. Both infants are in the neonatal intensive care unit and require at least six more weeks of incubator care, respiratory support and specialised formula. The family has exhausted their savings.",
+    use_of_funds: "NICU bed fees ₦1,500,000, respiratory care ₦600,000, specialised formula and follow-up ₦300,000.",
+    problem_statement: "Twin neonates in NICU require six weeks more care; family savings exhausted.",
+    who_benefits: "Aisha Bello and twin daughters Halima and Maryam.",
+    timeline_of_events: "Birth 2026-05-09. NICU stay through 2026-06-25. Outpatient follow-up to 2026-09-30.",
+    evidence: [{ id: "e1", type: "MEDICAL_DOCUMENT", title: "NICU admission record", description: "Twin admission paperwork (redacted)", uri: "ipfs://bafkreigabello", date: "2026-05-09", sourceName: "National Hospital Abuja" }],
+    public_signals: [{ platform: "instagram", url: "https://instagram.com/aisha.bello.twins" }],
+  },
+];
+
+function pickPersona() {
+  return PERSONAS[(_counter + Date.now()) % PERSONAS.length];
+}
+
+function campaignPayload(overrides = {}) {
+  const p = overrides.persona || pickPersona();
+  return JSON.stringify({
+    title: p.title,
+    creator: overrides.creator || W1.account.address,
+    category: p.category,
+    country: p.country,
+    funding_goal: p.funding_goal,
+    currency: p.currency,
+    beneficiary: p.beneficiary,
     wallet_address: overrides.wallet || W1.account.address,
-    story: overrides.story || "Adaeze was diagnosed with a stage II tumour. Surgery required within 30 days. Test suite payload " + RUN_TAG,
-    use_of_funds: "Surgery 3200, post-op 800, meds 500.",
-    problem_statement: "Surgery required within 30 days.",
-    who_benefits: "Adaeze Okonkwo, 34, mother of two.",
-    timeline_of_events: "Diagnosis 2026-04-12. Surgery 2026-07-02.",
-    evidence: [{ id: "e1", type: "MEDICAL_DOCUMENT", title: "Diagnosis", description: "Redacted", uri: "ipfs://test", date: "2026-04-12", sourceName: "Lagos General Hospital" }],
-    public_signals: [{ platform: "x", url: "https://x.com/test" }],
+    story: overrides.story || p.story,
+    use_of_funds: p.use_of_funds,
+    problem_statement: p.problem_statement,
+    who_benefits: p.who_benefits,
+    timeline_of_events: p.timeline_of_events,
+    evidence: p.evidence,
+    public_signals: p.public_signals,
     ...overrides,
   });
 }
@@ -401,7 +480,7 @@ suite("revert-duplicate-campaign", async () => {
   await callWrite({ client: W1.client, address: CONTRACT, functionName: "create_campaign", args: [id, campaignPayload()], callerLabel: "W1" });
   await callWrite({
     client: W1.client, address: CONTRACT, functionName: "create_campaign",
-    args: [id, campaignPayload({ story: "Duplicate attempt" })],
+    args: [id, campaignPayload({ story: "Resubmission attempt with the same id. The on-chain contract is expected to reject this because the id is already taken." })],
     callerLabel: "W1", expectRevert: true, revertMatch: /already exists/i,
   });
   const c = await readJson("get_campaign", [id]);
@@ -412,8 +491,12 @@ suite("revert-duplicate-campaign", async () => {
 suite("revert-missing-required-field", async () => {
   const id = nextId("CAMP");
   // missing `story`
+  // Intentionally omit the required `story` field — contract must reject this.
   const bad = JSON.stringify({
-    title: "Bad", creator: W1.account.address, funding_goal: "100",
+    title: "Tuition Support for Daniel Mwangi",
+    creator: W1.account.address,
+    funding_goal: "180000",
+    currency: "KES",
   });
   await callWrite({
     client: W1.client, address: CONTRACT, functionName: "create_campaign",
@@ -438,10 +521,13 @@ suite("revert-duplicate-update", async () => {
   const uid = nextId("UPD");
   await callWrite({ client: W1.client, address: CONTRACT, functionName: "create_campaign", args: [id, campaignPayload()], callerLabel: "W1" });
   await callWrite({ client: W1.client, address: CONTRACT, functionName: "submit_campaign_for_review", args: [id], callerLabel: "W1" });
-  await callWrite({ client: W1.client, address: CONTRACT, functionName: "submit_update", args: [uid, id, JSON.stringify({ title: "first" })], callerLabel: "W1" });
+  await callWrite({ client: W1.client, address: CONTRACT, functionName: "submit_update", args: [uid, id, JSON.stringify({
+    title: "First instalment posted",
+    body: "Initial NICU fee paid; receipt #NHA-2026-771 attached.",
+  })], callerLabel: "W1" });
   await callWrite({
     client: W1.client, address: CONTRACT, functionName: "submit_update",
-    args: [uid, id, JSON.stringify({ title: "second" })],
+    args: [uid, id, JSON.stringify({ title: "Duplicate id retry", body: "Should be rejected on-chain." })],
     callerLabel: "W1", expectRevert: true, revertMatch: /update id exists/i,
   });
 });
@@ -451,10 +537,13 @@ suite("revert-duplicate-dispute", async () => {
   const id = nextId("CAMP");
   const did = nextId("DSP");
   await callWrite({ client: W1.client, address: CONTRACT, functionName: "create_campaign", args: [id, campaignPayload()], callerLabel: "W1" });
-  await callWrite({ client: W3.client, address: CONTRACT, functionName: "flag_campaign", args: [did, id, JSON.stringify({ reason: "duplicate test", description: "first" })], callerLabel: "W3" });
+  await callWrite({ client: W3.client, address: CONTRACT, functionName: "flag_campaign", args: [did, id, JSON.stringify({
+    reason: "Stolen identity",
+    description: "Wallet address on the campaign does not match any verifiable identity for the named beneficiary in Catbalogan. Requesting verification before donations continue.",
+  })], callerLabel: "W3" });
   await callWrite({
     client: W3.client, address: CONTRACT, functionName: "flag_campaign",
-    args: [did, id, JSON.stringify({ reason: "duplicate test", description: "second" })],
+    args: [did, id, JSON.stringify({ reason: "Stolen identity", description: "Duplicate id retry — should revert on-chain." })],
     callerLabel: "W3", expectRevert: true, revertMatch: /dispute id exists/i,
   });
 });
@@ -492,15 +581,18 @@ suite("nondet-review-campaign", async () => {
 suite("nondet-review-update", async () => {
   const id = nextId("CAMP");
   const uid = nextId("UPD");
-  await callWrite({ client: W1.client, address: CONTRACT, functionName: "create_campaign", args: [id, campaignPayload()], callerLabel: "W1" });
+  // Pin one persona for the whole suite so the update aligns with the
+  // campaign — otherwise the consensus reviewer correctly flags the mismatch.
+  const persona = PERSONAS[1]; // Daniel Mwangi · Kenyatta University tuition
+  await callWrite({ client: W1.client, address: CONTRACT, functionName: "create_campaign", args: [id, campaignPayload({ persona })], callerLabel: "W1" });
   await callWrite({ client: W1.client, address: CONTRACT, functionName: "submit_campaign_for_review", args: [id], callerLabel: "W1" });
   await callWrite({ client: W1.client, address: CONTRACT, functionName: "submit_update", args: [uid, id, JSON.stringify({
-    title: "Spend report",
-    body: "Spent $1,200. Receipt attached.",
-    amount_spent: "1200",
-    evidence_links: ["ipfs://receipt"],
-    fund_usage_explanation: "Direct to hospital.",
-    next_steps: "Continue raising.",
+    title: "Tuition partially paid — first instalment",
+    body: "Posted KES 65,000 to the Kenyatta University bursar yesterday. Official receipt #BU-2026-4421 attached. Daniel will now sit next month's exam.",
+    amount_spent: "65000",
+    evidence_links: ["ipfs://bafkreigreceiptku4421"],
+    fund_usage_explanation: "Paid directly to Kenyatta University bursar account; receipt #BU-2026-4421 issued.",
+    next_steps: "Raising remaining KES 75,000 by 1 August deadline.",
   })], callerLabel: "W1" });
   await callWrite({ client: W4.client, address: CONTRACT, functionName: "review_update", args: [uid], callerLabel: "W4" });
 
@@ -514,10 +606,15 @@ suite("nondet-review-update", async () => {
 suite("nondet-resolve-dispute", async () => {
   const id = nextId("CAMP");
   const did = nextId("DSP");
-  await callWrite({ client: W1.client, address: CONTRACT, functionName: "create_campaign", args: [id, campaignPayload()], callerLabel: "W1" });
+  // Pin persona 2 (Maria Santos / Typhoon relief) so the dispute is about
+  // something the reviewer can actually corroborate against the campaign.
+  const persona = PERSONAS[2];
+  await callWrite({ client: W1.client, address: CONTRACT, functionName: "create_campaign", args: [id, campaignPayload({ persona })], callerLabel: "W1" });
   await callWrite({ client: W3.client, address: CONTRACT, functionName: "flag_campaign", args: [did, id, JSON.stringify({
-    reason: "Plagiarised campaign", description: "Story overlaps with prior templates.",
-    evidence: "https://example.com/source", severity: "MEDIUM",
+    reason: "Suspicious wallet behaviour",
+    description: "The wallet on this typhoon-relief campaign has no prior on-chain history consistent with the stated Catbalogan location, and the only attached barangay certification is unverified. Requesting additional corroboration before donations continue.",
+    evidence: "https://archive.example.com/wallet-history-2026",
+    severity: "MEDIUM",
   })], callerLabel: "W3" });
   await callWrite({ client: W4.client, address: CONTRACT, functionName: "resolve_dispute", args: [did], callerLabel: "W4" });
 
