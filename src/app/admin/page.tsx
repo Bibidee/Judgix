@@ -17,7 +17,7 @@ import {
 import { ProtocolConfig, ProtocolStats } from "@/types";
 
 export default function AdminPage() {
-  const { connected, account, isOwner, connect } = useWallet();
+  const { connected, sendWrite, isOwner, connect } = useWallet();
   const [cfg, setCfg] = useState<ProtocolConfig | null>(null);
   const [stats, setStats] = useState<ProtocolStats | null>(null);
   const [feeGen, setFeeGen] = useState("");
@@ -44,7 +44,7 @@ export default function AdminPage() {
   }
 
   async function run<T>(label: string, fn: () => Promise<T>) {
-    if (!account) return;
+    if (!sendWrite) return;
     setError(""); setBusy(label);
     try { await fn(); await refresh(); } catch (err) { setError(explainContractError(err)); }
     finally { setBusy(""); }
@@ -97,11 +97,11 @@ export default function AdminPage() {
       <PaperCard eyebrow="Protocol" title="Live state">
         <div className="flex gap-3">
           {paused ? (
-            <button disabled={!!busy} onClick={() => run("unpause", () => adminUnpause(account!))} className="bg-coral text-cloud px-4 py-2 rounded-md text-sm">
+            <button disabled={!!busy} onClick={() => run("unpause", () => adminUnpause(sendWrite!))} className="bg-coral text-cloud px-4 py-2 rounded-md text-sm">
               {busy === "unpause" ? "Working…" : "Unpause protocol"}
             </button>
           ) : (
-            <button disabled={!!busy} onClick={() => run("pause", () => adminPause(account!))} className="border border-raspberry text-raspberry px-4 py-2 rounded-md text-sm">
+            <button disabled={!!busy} onClick={() => run("pause", () => adminPause(sendWrite!))} className="border border-raspberry text-raspberry px-4 py-2 rounded-md text-sm">
               {busy === "pause" ? "Working…" : "Pause protocol"}
             </button>
           )}
@@ -120,7 +120,7 @@ export default function AdminPage() {
               const v = Number(feeGen);
               if (!Number.isFinite(v) || v < 0) { setError("Fee must be a non-negative number."); return; }
               const wei = BigInt(Math.round(v * 1e18));
-              run("fee", () => adminSetReviewFee(account!, wei.toString()));
+              run("fee", () => adminSetReviewFee(sendWrite!, wei.toString()));
             }}
             className="bg-plum text-cloud px-4 py-2 rounded-md text-sm"
           >{busy === "fee" ? "Working…" : "Update fee"}</button>
@@ -135,7 +135,7 @@ export default function AdminPage() {
           </label>
           <button
             disabled={!!busy}
-            onClick={() => run("keeper", () => adminSetKeeper(account!, keeper))}
+            onClick={() => run("keeper", () => adminSetKeeper(sendWrite!, keeper))}
             className="bg-plum text-cloud px-4 py-2 rounded-md text-sm"
           >{busy === "keeper" ? "Working…" : "Update keeper"}</button>
         </div>
@@ -152,7 +152,7 @@ export default function AdminPage() {
           </label>
           <button
             disabled={!!busy}
-            onClick={() => run("schema", () => adminSetSchemaVersion(account!, schema))}
+            onClick={() => run("schema", () => adminSetSchemaVersion(sendWrite!, schema))}
             className="bg-plum text-cloud px-4 py-2 rounded-md text-sm"
           >{busy === "schema" ? "Working…" : "Update schema"}</button>
         </div>

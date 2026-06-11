@@ -1,11 +1,10 @@
 "use client";
 
-import type { Account } from "viem";
 import {
   JUDGIX_CONTRACT_ADDRESS,
-  getClientForAccount,
   getReadOnlyClient,
 } from "./sdk";
+import type { SendWrite } from "@/lib/wallet/privyWriteClient";
 import type {
   Campaign,
   Verdict,
@@ -45,9 +44,7 @@ class TxTimeoutError extends Error {
   constructor(public functionName: string, public timeoutMs: number) {
     super(
       `[Judgix] ${functionName} did not return a tx hash within ${timeoutMs}ms. ` +
-      `The wallet never produced a signed transaction. Most likely the embedded ` +
-      `wallet provider does not support eth_signTransaction. Check the browser ` +
-      `console for "[Judgix] write" logs and inspect the connected signer.`
+      `The wallet never broadcast. Check the browser console for "[Judgix privyWriteClient]" logs.`,
     );
     this.name = "TxTimeoutError";
   }
@@ -62,66 +59,41 @@ function withTimeout<T>(p: Promise<T>, ms: number, onTimeout: () => Error): Prom
 }
 
 async function writeMethod(
-  account: Account,
+  sendWrite: SendWrite | null,
   functionName: string,
   args: any[] = [],
   opts: WriteOpts = {},
-): Promise<{ hash: string; receipt: any | null }> {
+): Promise<{ hash: string }> {
   const debug = (...parts: any[]) =>
     console.log("[Judgix] write", functionName, ...parts);
 
-  if (!account) {
-    throw new Error(`[Judgix] ${functionName} aborted — no signer (account is null). The wallet is not connected or the Privy embedded wallet has not finished provisioning.`);
+  if (!sendWrite) {
+    throw new Error(`[Judgix] ${functionName} aborted — Privy sendWrite is not ready. Sign in and wait for the embedded wallet to provision.`);
   }
   if (!JUDGIX_CONTRACT_ADDRESS) {
     throw new Error(`[Judgix] ${functionName} aborted — NEXT_PUBLIC_JUDGIX_ADDRESS is empty.`);
   }
 
-  debug("preflight", {
-    address: JUDGIX_CONTRACT_ADDRESS,
-    signer: account?.address,
-    args,
-    value: (opts.value ?? 0n).toString(),
-  });
+  debug("preflight", { address: JUDGIX_CONTRACT_ADDRESS, args, value: (opts.value ?? 0n).toString() });
 
-  const client = getClientForAccount(account);
-
-  // Step 1: writeContract → returns tx hash.
   const broadcastMs = opts.broadcastTimeoutMs ?? 30_000;
-  const writePromise = client.writeContract({
-    address: JUDGIX_CONTRACT_ADDRESS,
-    functionName,
-    args,
-    value: opts.value ?? BigInt(0),
-  });
 
   let hash: string;
   try {
-    debug("awaiting writeContract…");
-    hash = await withTimeout(writePromise, broadcastMs, () => new TxTimeoutError(functionName, broadcastMs));
+    const { hash: h } = await withTimeout(
+      sendWrite(functionName, args, { value: opts.value ?? 0n }),
+      broadcastMs,
+      () => new TxTimeoutError(functionName, broadcastMs),
+    );
+    hash = h;
   } catch (err) {
-    debug("writeContract REJECTED", err);
+    debug("send REJECTED", err);
     throw err;
   }
 
   debug("hash received", hash);
   opts.onHash?.(hash);
-
-  // Step 2: wait for receipt — don't fail the caller if the receipt decoder
-  // chokes; the tx is on-chain and state polls will confirm it.
-  let receipt: any = null;
-  try {
-    receipt = await client.waitForTransactionReceipt({ hash, status: "FINALIZED" as any, retries: 200, interval: 3000 } as any);
-    debug("receipt finalized");
-  } catch (err) {
-    const msg = String((err as any)?.message || err);
-    debug("waitForTransactionReceipt threw", msg.slice(0, 200));
-    if (!/out of bounds|position|invalid (utf-8|byte)|unexpected end/i.test(msg)) {
-      throw err;
-    }
-    try { receipt = await (client as any).getTransaction({ hash }); } catch { receipt = null; }
-  }
-  return { hash, receipt };
+  return { hash };
 }
 
 // ---------------- Reads ----------------
@@ -289,77 +261,77 @@ export async function fetchCreatorReputation(creator: string): Promise<CreatorRe
 
 // ---------------- Writes ----------------
 
-export async function createCampaign(account: Account, campaignId: string, payload: AnyJson, opts: WriteOpts = {}) {
-  return writeMethod(account, "create_campaign", [campaignId, JSON.stringify(payload)], opts);
+export async function createCampaign(send: SendWrite | null, campaignId: string, payload: AnyJson, opts: WriteOpts = {}) {
+  return writeMethod(send, "create_campaign", [campaignId, JSON.stringify(payload)], opts);
 }
 
-export async function commitEvidence(account: Account, campaignId: string, evidenceHash: string, opts: WriteOpts = {}) {
-  return writeMethod(account, "commit_evidence", [campaignId, evidenceHash], opts);
+export async function commitEvidence(send: SendWrite | null, campaignId: string, evidenceHash: string, opts: WriteOpts = {}) {
+  return writeMethod(send, "commit_evidence", [campaignId, evidenceHash], opts);
 }
 
-export async function submitSanitisedEvidence(account: Account, campaignId: string, evidence: AnyJson, opts: WriteOpts = {}) {
-  return writeMethod(account, "submit_sanitised_evidence", [campaignId, JSON.stringify(evidence)], opts);
+export async function submitSanitisedEvidence(send: SendWrite | null, campaignId: string, evidence: AnyJson, opts: WriteOpts = {}) {
+  return writeMethod(send, "submit_sanitised_evidence", [campaignId, JSON.stringify(evidence)], opts);
 }
 
-export async function revealEvidence(account: Account, campaignId: string, evidence: AnyJson, salt: string, opts: WriteOpts = {}) {
-  return writeMethod(account, "reveal_evidence", [campaignId, JSON.stringify(evidence), salt], opts);
+export async function revealEvidence(send: SendWrite | null, campaignId: string, evidence: AnyJson, salt: string, opts: WriteOpts = {}) {
+  return writeMethod(send, "reveal_evidence", [campaignId, JSON.stringify(evidence), salt], opts);
 }
 
-export async function cancelCampaign(account: Account, campaignId: string, opts: WriteOpts = {}) {
-  return writeMethod(account, "cancel_campaign", [campaignId], opts);
+export async function cancelCampaign(send: SendWrite | null, campaignId: string, opts: WriteOpts = {}) {
+  return writeMethod(send, "cancel_campaign", [campaignId], opts);
 }
 
-export async function triggerReview(account: Account, campaignId: string, feeWei: bigint, opts: Omit<WriteOpts, "value"> = {}) {
-  return writeMethod(account, "trigger_review", [campaignId], { ...opts, value: feeWei });
+export async function triggerReview(send: SendWrite | null, campaignId: string, feeWei: bigint, opts: Omit<WriteOpts, "value"> = {}) {
+  return writeMethod(send, "trigger_review", [campaignId], { ...opts, value: feeWei });
 }
 
-export async function flagCampaign(account: Account, campaignId: string, reason: string, opts: WriteOpts = {}) {
+export async function flagCampaign(send: SendWrite | null, campaignId: string, reason: string, opts: WriteOpts = {}) {
   const flag = { reason };
-  return writeMethod(account, "flag_campaign", [campaignId, JSON.stringify(flag)], opts);
+  return writeMethod(send, "flag_campaign", [campaignId, JSON.stringify(flag)], opts);
 }
 
-export async function submitAppeal(account: Account, campaignId: string, appealId: string, reason: string, opts: WriteOpts = {}) {
-  return writeMethod(account, "submit_appeal", [campaignId, appealId, reason], opts);
+export async function submitAppeal(send: SendWrite | null, campaignId: string, appealId: string, reason: string, opts: WriteOpts = {}) {
+  return writeMethod(send, "submit_appeal", [campaignId, appealId, reason], opts);
 }
 
-export async function commitAppealEvidence(account: Account, appealId: string, evidenceHash: string, opts: WriteOpts = {}) {
-  return writeMethod(account, "commit_appeal_evidence", [appealId, evidenceHash], opts);
+export async function commitAppealEvidence(send: SendWrite | null, appealId: string, evidenceHash: string, opts: WriteOpts = {}) {
+  return writeMethod(send, "commit_appeal_evidence", [appealId, evidenceHash], opts);
 }
 
-export async function submitAppealEvidence(account: Account, appealId: string, evidence: AnyJson, opts: WriteOpts = {}) {
-  return writeMethod(account, "submit_appeal_evidence", [appealId, JSON.stringify(evidence)], opts);
+export async function submitAppealEvidence(send: SendWrite | null, appealId: string, evidence: AnyJson, opts: WriteOpts = {}) {
+  return writeMethod(send, "submit_appeal_evidence", [appealId, JSON.stringify(evidence)], opts);
 }
 
-export async function revealAppealEvidence(account: Account, appealId: string, evidence: AnyJson, salt: string, opts: WriteOpts = {}) {
-  return writeMethod(account, "reveal_appeal_evidence", [appealId, JSON.stringify(evidence), salt], opts);
+export async function revealAppealEvidence(send: SendWrite | null, appealId: string, evidence: AnyJson, salt: string, opts: WriteOpts = {}) {
+  return writeMethod(send, "reveal_appeal_evidence", [appealId, JSON.stringify(evidence), salt], opts);
 }
 
-export async function triggerAppealReview(account: Account, appealId: string, feeWei: bigint, opts: Omit<WriteOpts, "value"> = {}) {
-  return writeMethod(account, "trigger_appeal_review", [appealId], { ...opts, value: feeWei });
+export async function triggerAppealReview(send: SendWrite | null, appealId: string, feeWei: bigint, opts: Omit<WriteOpts, "value"> = {}) {
+  return writeMethod(send, "trigger_appeal_review", [appealId], { ...opts, value: feeWei });
 }
 
 // ---------------- Admin (limited) ----------------
 
-export async function adminPause(account: Account, opts: WriteOpts = {}) {
-  return writeMethod(account, "admin_pause", [], opts);
+export async function adminPause(send: SendWrite | null, opts: WriteOpts = {}) {
+  return writeMethod(send, "admin_pause", [], opts);
 }
-export async function adminUnpause(account: Account, opts: WriteOpts = {}) {
-  return writeMethod(account, "admin_unpause", [], opts);
+export async function adminUnpause(send: SendWrite | null, opts: WriteOpts = {}) {
+  return writeMethod(send, "admin_unpause", [], opts);
 }
-export async function adminSetReviewFee(account: Account, feeWei: string, opts: WriteOpts = {}) {
-  return writeMethod(account, "admin_set_review_fee", [feeWei], opts);
+export async function adminSetReviewFee(send: SendWrite | null, feeWei: string, opts: WriteOpts = {}) {
+  return writeMethod(send, "admin_set_review_fee", [feeWei], opts);
 }
-export async function adminSetKeeper(account: Account, keeper: string, opts: WriteOpts = {}) {
-  return writeMethod(account, "admin_set_keeper", [keeper], opts);
+export async function adminSetKeeper(send: SendWrite | null, keeper: string, opts: WriteOpts = {}) {
+  return writeMethod(send, "admin_set_keeper", [keeper], opts);
 }
-export async function adminSetSchemaVersion(account: Account, version: string, opts: WriteOpts = {}) {
-  return writeMethod(account, "admin_set_schema_version", [version], opts);
+export async function adminSetSchemaVersion(send: SendWrite | null, version: string, opts: WriteOpts = {}) {
+  return writeMethod(send, "admin_set_schema_version", [version], opts);
 }
-export async function adminSetHidden(account: Account, campaignId: string, hidden: boolean, opts: WriteOpts = {}) {
-  return writeMethod(account, "admin_set_hidden", [campaignId, hidden], opts);
+export async function adminSetHidden(send: SendWrite | null, campaignId: string, hidden: boolean, opts: WriteOpts = {}) {
+  return writeMethod(send, "admin_set_hidden", [campaignId, hidden], opts);
 }
-export async function adminMarkSpam(account: Account, campaignId: string, reason: string, opts: WriteOpts = {}) {
-  return writeMethod(account, "admin_mark_spam", [campaignId, reason], opts);
+export async function adminMarkSpam(send: SendWrite | null, campaignId: string, reason: string, opts: WriteOpts = {}) {
+  return writeMethod(send, "admin_mark_spam", [campaignId, reason], opts);
 }
 
 // ---------------- Commit-reveal helpers ----------------

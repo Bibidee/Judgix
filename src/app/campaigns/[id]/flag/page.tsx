@@ -19,7 +19,7 @@ const REASONS = [
 
 export default function FlagCampaignPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const { connected, account, connect } = useWallet();
+  const { connected, sendWrite, connect } = useWallet();
 
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [reasonPick, setReasonPick] = useState(REASONS[0]);
@@ -36,7 +36,7 @@ export default function FlagCampaignPage({ params }: { params: Promise<{ id: str
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
-    if (!connected || !account) { setError("Connect a wallet first."); return; }
+    if (!connected || !sendWrite) { setError("Connect a wallet first."); return; }
 
     const reason = (reasonPick === "Other" ? details : `${reasonPick}${details ? ": " + details : ""}`).trim();
     if (!reason) { setError("Please provide a reason."); return; }
@@ -44,7 +44,7 @@ export default function FlagCampaignPage({ params }: { params: Promise<{ id: str
     setBusy(true);
     try {
       setStage("Filing flag on-chain…");
-      await flagCampaign(account, id, reason, {
+      await flagCampaign(sendWrite, id, reason, {
         onHash: h => setStage(`flag_campaign broadcast · ${h.slice(0, 10)}…`),
       });
       setDone(true);

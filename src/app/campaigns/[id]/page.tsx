@@ -42,7 +42,7 @@ const RISK_COPY: Record<DonorRiskLevel, string> = {
 
 export default function CampaignTrustReport({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const { connected, account, address } = useWallet();
+  const { connected, sendWrite, address } = useWallet();
 
   const [c, setC] = useState<Campaign | null>(null);
   const [verdict, setVerdict] = useState<Verdict | null>(null);
@@ -90,13 +90,13 @@ export default function CampaignTrustReport({ params }: { params: Promise<{ id: 
   const canCancel = isCreator && !["UNDER_REVIEW", "REVIEWED", "APPEALED", "APPEAL_REVIEWED"].includes(c.status);
 
   async function onTriggerReview() {
-    if (!account) return;
+    if (!sendWrite) return;
     setError("");
     setTriggering(true);
     try {
       setTriggerStage("Paying review fee and submitting trigger_review…");
       const fee = reviewFeeWei ?? BigInt(10_000_000_000_000_000); // 0.01 GEN fallback
-      await triggerReview(account, c!.id, fee, {
+      await triggerReview(sendWrite, c!.id, fee, {
         onHash: h => setTriggerStage(`Tx broadcast — awaiting consensus… ${h.slice(0, 10)}…`),
       });
       setTriggerStage("Polling for verdict…");
@@ -113,10 +113,10 @@ export default function CampaignTrustReport({ params }: { params: Promise<{ id: 
   }
 
   async function onCancel() {
-    if (!account) return;
+    if (!sendWrite) return;
     setError("");
     try {
-      await cancelCampaign(account, c!.id);
+      await cancelCampaign(sendWrite, c!.id);
       const fresh = await fetchCampaign(c!.id);
       if (fresh) setC(fresh);
     } catch (err) {

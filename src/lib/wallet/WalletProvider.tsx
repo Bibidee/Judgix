@@ -4,6 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import type { Account } from "viem";
 import { usePrivy, useWallets, useLogin, useLogout } from "@privy-io/react-auth";
 import { accountFromEip1193 } from "@/lib/wallet/walletAdapter";
+import { usePrivyWriteClient, type SendWrite } from "@/lib/wallet/privyWriteClient";
 
 const CONFIGURED_ADMIN = (process.env.NEXT_PUBLIC_ADMIN_ADDRESS || "").trim().toLowerCase() || null;
 const PRIVY_APP_ID = (process.env.NEXT_PUBLIC_PRIVY_APP_ID || "").trim();
@@ -19,6 +20,8 @@ type WalletState = {
   address: string | null;
   /** viem Account adapter that signs via Privy's EIP-1193 provider. */
   account: Account | null;
+  /** Send a GenLayer write through Privy's broadcast path (not viem's signTransaction). */
+  sendWrite: SendWrite | null;
   /** Contract owner / admin address (from env). */
   ownerAddress: string | null;
   isOwner: boolean;
@@ -52,6 +55,7 @@ function NoPrivyShell({ children }: { children: React.ReactNode }) {
     ready: true,
     address: null,
     account: null,
+    sendWrite: null,
     ownerAddress: CONFIGURED_ADMIN,
     isOwner: false,
     connect: async () => { console.warn("Privy is not configured"); },
@@ -66,6 +70,7 @@ function PrivyBackedWallet({ children }: { children: React.ReactNode }) {
   const { wallets } = useWallets();
   const { login } = useLogin();
   const { logout } = useLogout();
+  const { sendWrite } = usePrivyWriteClient();
 
   const [account, setAccount] = useState<Account | null>(null);
   const [address, setAddress] = useState<string | null>(null);
@@ -120,11 +125,12 @@ function PrivyBackedWallet({ children }: { children: React.ReactNode }) {
   const isOwner = !!(address && CONFIGURED_ADMIN && address.toLowerCase() === CONFIGURED_ADMIN);
 
   const value: WalletState = {
-    connected: !!account && !!address,
+    connected: !!address && authenticated,
     authenticated,
     ready,
     address,
     account,
+    sendWrite,
     ownerAddress: CONFIGURED_ADMIN,
     isOwner,
     connect,

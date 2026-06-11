@@ -42,7 +42,7 @@ const emptyRow = (): UseOfFundsRow => ({ item: "", amount: "" });
 
 export default function CreateCasePage() {
   const router = useRouter();
-  const { connected, account, address, connect } = useWallet();
+  const { connected, sendWrite, address, connect } = useWallet();
 
   const [title, setTitle] = useState("");
   const [category, setCategory] = useState("medical");
@@ -117,7 +117,7 @@ export default function CreateCasePage() {
     e.preventDefault();
     setError("");
 
-    if (!connected || !account || !address) { setError("Connect a wallet first."); return; }
+    if (!connected || !sendWrite || !address) { setError("Connect a wallet first."); return; }
     if (!consent) { setError("Please confirm the disclosure statement."); return; }
     if (!title || !story || !fundingGoal || !beneficiarySummary || !regionSummary || !timeline || !evidenceSummary || !redactionStatement) {
       setError("Please fill in the required fields.");
@@ -148,16 +148,16 @@ export default function CreateCasePage() {
     });
 
     setBusy(true);
-    console.log("[Judgix /create] submitting", { id, signer: account.address, contract_payload: campaignPayload });
+    console.log("[Judgix /create] submitting", { id, signer: address, contract_payload: campaignPayload });
     try {
       setStage("Creating campaign on Judgix contract…");
-      const create = await createCampaign(account, id, campaignPayload, {
+      const create = await createCampaign(sendWrite, id, campaignPayload, {
         onHash: h => setStage(`create_campaign broadcast · ${h.slice(0, 10)}…`),
       });
       console.log("[Judgix /create] create_campaign tx", create.hash);
 
       setStage("Submitting sanitised evidence…");
-      const submit = await submitSanitisedEvidence(account, id, evidencePayload, {
+      const submit = await submitSanitisedEvidence(sendWrite, id, evidencePayload, {
         onHash: h => setStage(`submit_sanitised_evidence broadcast · ${h.slice(0, 10)}…`),
       });
       console.log("[Judgix /create] submit_sanitised_evidence tx", submit.hash);
