@@ -38,7 +38,7 @@ type Draft = {
   redactionStatement: string; documentHash: string;
 };
 
-const EMPTY_ROW: UseOfFundsRow = { item: "", amount: "" };
+const emptyRow = (): UseOfFundsRow => ({ item: "", amount: "" });
 
 export default function CreateCasePage() {
   const router = useRouter();
@@ -50,7 +50,7 @@ export default function CreateCasePage() {
   const [fundingGoal, setFundingGoal] = useState("");
   const [beneficiarySummary, setBeneficiarySummary] = useState("");
   const [regionSummary, setRegionSummary] = useState("");
-  const [useOfFunds, setUseOfFunds] = useState<UseOfFundsRow[]>([EMPTY_ROW]);
+  const [useOfFunds, setUseOfFunds] = useState<UseOfFundsRow[]>([emptyRow()]);
   const [timeline, setTimeline] = useState("");
   const [publicProofLinks, setPublicProofLinks] = useState("");
   const [riskDisclosure, setRiskDisclosure] = useState("");
@@ -105,10 +105,13 @@ export default function CreateCasePage() {
       beneficiaryRelationship, redactionStatement, documentHash]);
 
   function setRow(i: number, k: keyof UseOfFundsRow, v: string) {
-    const next = [...useOfFunds]; (next[i] as any)[k] = v; setUseOfFunds(next);
+    // Immutable update — never mutate row objects in place, otherwise rows
+    // that share a reference (e.g. all added via the same `emptyRow()` call
+    // earlier in this render) would update together.
+    setUseOfFunds(prev => prev.map((row, idx) => idx === i ? { ...row, [k]: v } : row));
   }
-  function addRow() { setUseOfFunds([...useOfFunds, EMPTY_ROW]); }
-  function removeRow(i: number) { setUseOfFunds(useOfFunds.filter((_, j) => j !== i)); }
+  function addRow() { setUseOfFunds(prev => [...prev, emptyRow()]); }
+  function removeRow(i: number) { setUseOfFunds(prev => prev.filter((_, j) => j !== i)); }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
