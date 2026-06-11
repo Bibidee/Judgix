@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --cloud: #F7FBFF;
+  --plum: #24162F;
+  --coral: #FF6B5E;
+  --cyan: #22D3EE;
+  --evidence: #2563EB;
+  --apricot: #FFD166;
+  --mint: #7AE7C7;
+  --raspberry: #D90368;
+  --slate: #6D5A7D;
+  --mist: #DCE9F2;
+  --lilac: #F2E9FF;
+  --deeptext: #171321;
+}
+
+html, body {
+  background: var(--cloud);
+  color: var(--deeptext);
+}
+
+body {
+  font-family: var(--font-plex-sans), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-serif-display {
+  font-family: var(--font-fraunces), Georgia, serif;
+  font-feature-settings: "ss01" on;
+  letter-spacing: -0.01em;
+}
+
+.paper-card {
+  background: white;
+  border: 1px solid var(--mist);
+  border-radius: 14px;
+}
+
+.case-stamp {
+  font-family: var(--font-plex-mono), monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 11px;
+}
+
+.divider-dashed {
+  border-top: 1px dashed var(--mist);
+}
