@@ -7,7 +7,7 @@ import { fetchCampaign, fetchCampaignReview, fetchCampaignIds, fetchCreatorReput
 import { Campaign, CampaignReview } from "@/types";
 import { scoreColor } from "@/lib/scoring";
 
-function HeroVerdictCard({ featured, reviewById }: { featured: Campaign[]; reviewById: Record<string, CampaignReview> }) {
+function HeroVerdictCard({ featured, reviewById, loading }: { featured: Campaign[]; reviewById: Record<string, CampaignReview>; loading: boolean }) {
   // Build a list of every reviewed campaign and rotate through them.
   const reviewed = featured.filter(c => reviewById[c.id]);
   const [i, setI] = useState(0);
@@ -24,6 +24,27 @@ function HeroVerdictCard({ featured, reviewById }: { featured: Campaign[]; revie
     }, 4500);
     return () => clearInterval(timer);
   }, [reviewed.length]);
+
+  if (loading && reviewed.length === 0) {
+    return (
+      <div className="paper-card !bg-cloud p-6 text-deeptext">
+        <div className="flex items-center gap-2">
+          <span className="relative flex w-2.5 h-2.5">
+            <span className="absolute inline-flex h-full w-full rounded-full bg-mint opacity-75 animate-ping"></span>
+            <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-mint"></span>
+          </span>
+          <span className="case-stamp text-slate">Loading verdicts from the Studio Network…</span>
+        </div>
+        <div className="mt-4 space-y-3 animate-pulse">
+          <div className="h-7 bg-mist/70 rounded w-3/4" />
+          <div className="h-4 bg-mist/60 rounded w-1/2" />
+          <div className="h-16 bg-mist/40 rounded" />
+          <div className="h-3 bg-mist/60 rounded w-5/6" />
+          <div className="h-3 bg-mist/60 rounded w-2/3" />
+        </div>
+      </div>
+    );
+  }
 
   if (reviewed.length === 0) {
     return (
@@ -108,29 +129,55 @@ export default function LandingPage() {
   const [featured, setFeatured] = useState<Campaign[]>([]);
   const [reviewById, setReviewById] = useState<Record<string, CampaignReview>>({});
   const [reputations, setReputations] = useState<Record<string, any>>({});
+  const [heroLoading, setHeroLoading] = useState(true);
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
-      const ids = await fetchCampaignIds(0, 9);
+      // Pull a wider window. Most ids will be unreviewed because consensus
+      // review is opt-in; the hero only rotates the reviewed subset.
+      const ids = await fetchCampaignIds(0, 60).catch(() => [] as string[]);
+      // Walk from newest to oldest so the rotator favours recent verdicts.
+      const recent = [...ids].reverse().slice(0, 30);
+
+      // Fan out every (campaign, review) pair in parallel so the slowest
+      // RPC alone gates the rotator, not the sum of them.
+      const pairs = await Promise.all(
+        recent.map(async (id) => {
+          const [c, r] = await Promise.all([
+            fetchCampaign(id).catch(() => null),
+            fetchCampaignReview(id).catch(() => null),
+          ]);
+          return c ? { c, r } : null;
+        }),
+      );
+      if (cancelled) return;
+
       const out: Campaign[] = [];
       const rev: Record<string, CampaignReview> = {};
-      for (const id of ids.slice(0, 3)) {
-        const c = await fetchCampaign(id).catch(() => null);
-        if (!c) continue;
-        out.push(c);
-        const r = await fetchCampaignReview(id).catch(() => null);
-        if (r) rev[id] = r;
+      for (const p of pairs) {
+        if (!p) continue;
+        out.push(p.c);
+        if (p.r) rev[p.c.id] = p.r;
       }
+
+      // Show reviewed first; that's what the rotator filters down to anyway.
+      out.sort((a, b) => (rev[b.id] ? 1 : 0) - (rev[a.id] ? 1 : 0));
+
       setFeatured(out);
       setReviewById(rev);
+      setHeroLoading(false);
+
       const uniqueCreators = Array.from(new Set(out.map(c => c.creator).filter(Boolean)));
       const repPairs = await Promise.all(
         uniqueCreators.map(addr => fetchCreatorReputation(addr).then(r => [addr, r] as const).catch(() => [addr, null] as const)),
       );
+      if (cancelled) return;
       const repMap: Record<string, any> = {};
       for (const [addr, rep] of repPairs) if (rep) repMap[addr] = rep;
       setReputations(repMap);
     })();
+    return () => { cancelled = true; };
   }, []);
 
   return (
@@ -158,7 +205,7 @@ export default function LandingPage() {
             </div>
           </div>
           <div className="md:col-span-5">
-            <HeroVerdictCard featured={featured} reviewById={reviewById} />
+            <HeroVerdictCard featured={featured} reviewById={reviewById} loading={heroLoading} />
           </div>
         </div>
       </section>

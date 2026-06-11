@@ -24,8 +24,11 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
 
   const [c, setC] = useState<Campaign | null>(null);
   const [review, setReview] = useState<CampaignReview | null>(null);
+  const [reviewLoading, setReviewLoading] = useState(true);
   const [updates, setUpdates] = useState<CampaignUpdate[]>([]);
+  const [updatesLoading, setUpdatesLoading] = useState(true);
   const [disputes, setDisputes] = useState<Dispute[]>([]);
+  const [disputesLoading, setDisputesLoading] = useState(true);
   const [reputation, setReputation] = useState<Record<string, any> | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFoundState, setNotFoundState] = useState(false);
@@ -43,9 +46,18 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
 
         // Fire each fetch independently so each section renders as soon as
         // its own RPC returns, instead of waiting on the slowest one.
-        fetchCampaignReview(id).then(r => { if (!cancelled) setReview(r ?? null); }).catch(() => {});
-        fetchUpdatesForCampaign(id).then(u => { if (!cancelled) setUpdates(u as CampaignUpdate[]); }).catch(() => {});
-        fetchDisputesForCampaign(id).then(d => { if (!cancelled) setDisputes(d as Dispute[]); }).catch(() => {});
+        fetchCampaignReview(id)
+          .then(r => { if (!cancelled) setReview(r ?? null); })
+          .catch(() => {})
+          .finally(() => { if (!cancelled) setReviewLoading(false); });
+        fetchUpdatesForCampaign(id)
+          .then(u => { if (!cancelled) setUpdates(u as CampaignUpdate[]); })
+          .catch(() => {})
+          .finally(() => { if (!cancelled) setUpdatesLoading(false); });
+        fetchDisputesForCampaign(id)
+          .then(d => { if (!cancelled) setDisputes(d as Dispute[]); })
+          .catch(() => {})
+          .finally(() => { if (!cancelled) setDisputesLoading(false); });
         if (onChain.creator) {
           fetchCreatorReputation(onChain.creator).then(rep => { if (!cancelled) setReputation(rep); }).catch(() => {});
         }
@@ -91,6 +103,14 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
 
       {review ? (
         <VerdictPanel review={review} />
+      ) : reviewLoading ? (
+        <PaperCard eyebrow="Consensus review" title="Loading verdict…">
+          <div className="space-y-3 animate-pulse">
+            <div className="h-6 bg-mist/60 rounded w-1/3" />
+            <div className="h-4 bg-mist/50 rounded w-2/3" />
+            <div className="h-3 bg-mist/40 rounded w-5/6" />
+          </div>
+        </PaperCard>
       ) : (
         <PaperCard eyebrow="Pending review" title="Awaiting GenLayer consensus">
           <p>This campaign is awaiting GenLayer consensus review. Donors should wait for a verdict before relying on this case file.</p>
@@ -157,7 +177,13 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
       </PaperCard>
 
       <PaperCard eyebrow="Update trail" title="Progress posted by the creator">
-        {updates.length === 0
+        {updatesLoading
+          ? <div className="space-y-3 animate-pulse">
+              <div className="h-5 bg-mist/60 rounded w-1/2" />
+              <div className="h-3 bg-mist/40 rounded w-3/4" />
+              <div className="h-3 bg-mist/40 rounded w-2/3" />
+            </div>
+          : updates.length === 0
           ? <p className="text-slate text-sm">No updates posted yet.</p>
           : <ul className="space-y-4">
               {updates.map(u => (
@@ -188,7 +214,12 @@ export default function CampaignDetailPage({ params }: { params: Promise<{ id: s
       </PaperCard>
 
       <PaperCard eyebrow="Disputes" title="Challenges filed against this case">
-        {disputes.length === 0
+        {disputesLoading
+          ? <div className="space-y-3 animate-pulse">
+              <div className="h-5 bg-mist/60 rounded w-1/2" />
+              <div className="h-3 bg-mist/40 rounded w-3/4" />
+            </div>
+          : disputes.length === 0
           ? <p className="text-slate text-sm">No disputes filed.</p>
           : <ul className="space-y-3">
               {disputes.map(d => (
