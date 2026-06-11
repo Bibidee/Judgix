@@ -2,57 +2,66 @@
 
 import { use, useEffect, useState } from "react";
 import Link from "next/link";
-import { CampaignCard } from "@/components/campaign/CampaignCard";
 import { PaperCard, MonoStat } from "@/components/ui/PaperCard";
 import { EmptyState } from "@/components/ui/EmptyState";
 import {
   fetchCampaign,
-  fetchCampaignReview,
+  fetchVerdict,
   fetchCreatorCampaigns,
   fetchCreatorReputation,
 } from "@/lib/genlayer/contract";
-import { Campaign, CampaignReview } from "@/types";
+import { Campaign, Verdict, CreatorReputation } from "@/types";
 import { shortAddress } from "@/lib/scoring";
+import { CampaignTrustCard } from "@/components/campaign/CampaignTrustCard";
 
-export default function CreatorPage({ params }: { params: Promise<{ address: string }> }) {
+export default function CreatorProfilePage({ params }: { params: Promise<{ address: string }> }) {
   const { address } = use(params);
-
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
-  const [reviews, setReviews] = useState<Record<string, CampaignReview>>({});
-  const [reputation, setReputation] = useState<Record<string, any> | null>(null);
+  const [verdicts, setVerdicts] = useState<Record<string, Verdict>>({});
+  const [reputation, setReputation] = useState<CreatorReputation | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
-      setLoading(true);
       try {
         const [ids, rep] = await Promise.all([
           fetchCreatorCampaigns(address).catch(() => [] as string[]),
           fetchCreatorReputation(address).catch(() => null),
         ]);
-        setReputation(rep ?? null);
+        if (cancelled) return;
+        setReputation(rep);
 
-        const fetched: Campaign[] = [];
-        const revs: Record<string, CampaignReview> = {};
-        for (const id of ids) {
-          const c = await fetchCampaign(id).catch(() => null);
-          if (!c) continue;
-          fetched.push(c);
-          const r = await fetchCampaignReview(id).catch(() => null);
-          if (r) revs[id] = r;
+        const pairs = await Promise.all(
+          ids.map(async (id) => {
+            const [c, v] = await Promise.all([
+              fetchCampaign(id).catch(() => null),
+              fetchVerdict(id).catch(() => null),
+            ]);
+            return c ? { c, v } : null;
+          }),
+        );
+        if (cancelled) return;
+        const cs: Campaign[] = [];
+        const vs: Record<string, Verdict> = {};
+        for (const p of pairs) {
+          if (!p) continue;
+          cs.push(p.c);
+          if (p.v) vs[p.c.id] = p.v;
         }
-        setCampaigns(fetched);
-        setReviews(revs);
+        setCampaigns(cs);
+        setVerdicts(vs);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
+    return () => { cancelled = true; };
   }, [address]);
 
   return (
     <div className="max-w-7xl mx-auto px-6 py-10 space-y-8">
       <div className="case-stamp text-slate">
-        <Link href="/campaigns" className="hover:underline">Case Files</Link> / Creator / {shortAddress(address)}
+        <Link href="/campaigns" className="hover:underline">Trust reports</Link> / Creator / {shortAddress(address)}
       </div>
 
       <header className="paper-card p-6">
@@ -64,15 +73,15 @@ export default function CreatorPage({ params }: { params: Promise<{ address: str
       {reputation && (
         <PaperCard eyebrow="Reputation" title="On-chain track record">
           <div className="grid md:grid-cols-3 gap-3">
-            <MonoStat label="Reputation score" value={String(reputation.reputation_score ?? 0)} accent="#0F5E4A" />
-            <MonoStat label="Risk score" value={String(reputation.risk_score ?? 0)} accent="#D90368" />
-            <MonoStat label="Campaigns" value={String(reputation.campaigns_created ?? 0)} />
-            <MonoStat label="Verified" value={String(reputation.verified_campaigns ?? 0)} accent="#0F5E4A" />
-            <MonoStat label="Risky" value={String(reputation.risky_campaigns ?? 0)} accent="#B45A2B" />
-            <MonoStat label="Rejected" value={String(reputation.rejected_campaigns ?? 0)} accent="#9B0345" />
-            <MonoStat label="Updates" value={String(reputation.updates_submitted ?? 0)} />
-            <MonoStat label="Disputes" value={String(reputation.disputes_received ?? 0)} />
-            <MonoStat label="Confirmed disputes" value={String(reputation.disputes_confirmed ?? 0)} accent="#9B0345" />
+            <MonoStat label="Reviewed campaigns" value={String(reputation.reviewedCampaigns)} />
+            <MonoStat label="Verified" value={String(reputation.verifiedCount)} accent="#0F5E4A" />
+            <MonoStat label="Caution" value={String(reputation.cautionCount)} accent="#7A4E00" />
+            <MonoStat label="High risk" value={String(reputation.highRiskCount)} accent="#B45A2B" />
+            <MonoStat label="Rejected" value={String(reputation.rejectedCount)} accent="#9B0345" />
+            <MonoStat label="Avg authenticity" value={String(reputation.averageAuthenticityScore)} />
+            <MonoStat label="Avg evidence" value={String(reputation.averageEvidenceStrength)} />
+            <MonoStat label="Flags received" value={String(reputation.flagCount)} accent="#9B0345" />
+            <MonoStat label="Appeals" value={String(reputation.appealCount)} />
           </div>
         </PaperCard>
       )}
@@ -82,19 +91,17 @@ export default function CreatorPage({ params }: { params: Promise<{ address: str
         <h2 className="font-serif-display text-3xl mt-1">Track record</h2>
 
         {loading ? (
-          <div className="paper-card mt-6 p-12 text-center case-stamp text-slate">
-            Loading creator&apos;s campaigns from the GenLayer Studio Network…
-          </div>
+          <div className="paper-card mt-6 p-12 text-center case-stamp text-slate">Loading…</div>
         ) : campaigns.length === 0 ? (
           <EmptyState
             eyebrow="No campaigns"
             title="This creator hasn&apos;t opened a case file."
             description="Once they submit a campaign it will appear here alongside their consensus track record."
-            primaryAction={{ href: "/campaigns", label: "Browse all campaigns" }}
+            primaryAction={{ href: "/campaigns", label: "Browse trust reports" }}
           />
         ) : (
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-5 mt-6">
-            {campaigns.map(c => <CampaignCard key={c.id} campaign={c} review={reviews[c.id]} reputation={reputation ?? undefined} />)}
+            {campaigns.map(c => <CampaignTrustCard key={c.id} campaign={c} verdict={verdicts[c.id]} />)}
           </div>
         )}
       </section>

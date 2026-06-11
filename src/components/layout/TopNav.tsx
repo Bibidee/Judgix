@@ -17,14 +17,14 @@ export function TopNav() {
           </div>
         </Link>
         <nav className="hidden md:flex items-center gap-7 text-sm">
-          <Link href="/campaigns" className="hover:text-cyan">Case Files</Link>
+          <Link href="/campaigns" className="hover:text-cyan">Trust Reports</Link>
+          <Link href="/create" className="hover:text-cyan">Open Case</Link>
           {isOwner && (
-            <Link href="/review" className="hover:text-cyan flex items-center gap-2">
-              Review Docket
-              <span className="case-stamp bg-cyan text-plum px-1.5 py-0.5 rounded">MOD</span>
+            <Link href="/admin" className="hover:text-cyan flex items-center gap-2">
+              Admin
+              <span className="case-stamp bg-cyan text-plum px-1.5 py-0.5 rounded">ADMIN</span>
             </Link>
           )}
-          <Link href="/submit" className="hover:text-cyan">Open Case</Link>
         </nav>
         <WalletButton />
       </div>

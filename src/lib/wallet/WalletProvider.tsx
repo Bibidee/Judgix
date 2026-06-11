@@ -1,109 +1,36 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { Account } from "viem";
-import {
-  loadOrCreatePrivateKey,
-  setPrivateKey,
-  clearPrivateKey,
-  accountFromKey,
-} from "@/lib/genlayer/sdk";
-import { generatePrivateKey } from "genlayer-js";
-import { fetchContractOwner } from "@/lib/genlayer/contract";
+import { usePrivy, useWallets, useLogin, useLogout } from "@privy-io/react-auth";
+import { accountFromEip1193 } from "@/lib/wallet/walletAdapter";
 
-// Configured admin/deployer fallback. The Judgix contract stores `owner` but
-// doesn't expose a public view to read it, so we accept the deployer address
-// via env. If the contract ever does expose `owner()`, fetchContractOwner()
-// takes precedence over this value.
-const CONFIGURED_ADMIN = (process.env.NEXT_PUBLIC_ADMIN_ADDRESS || "").trim() || null;
+const CONFIGURED_ADMIN = (process.env.NEXT_PUBLIC_ADMIN_ADDRESS || "").trim().toLowerCase() || null;
+const PRIVY_APP_ID = (process.env.NEXT_PUBLIC_PRIVY_APP_ID || "").trim();
 
 type WalletState = {
+  /** True only when Privy is ready and an embedded wallet is provisioned. */
   connected: boolean;
+  /** Privy auth state — true after successful login, may precede wallet provisioning. */
+  authenticated: boolean;
+  /** Privy SDK ready (no longer loading). */
+  ready: boolean;
+  /** Embedded wallet checksummed address. */
   address: string | null;
+  /** viem Account adapter that signs via Privy's EIP-1193 provider. */
   account: Account | null;
+  /** Contract owner / admin address (from env). */
   ownerAddress: string | null;
   isOwner: boolean;
-  privateKey: `0x${string}` | null;
+  /** Trigger Privy login flow. */
   connect: () => Promise<void>;
-  disconnect: () => void;
-  importKey: (pk: `0x${string}`) => void;
-  rotateKey: () => void;
+  /** End Privy session. */
+  disconnect: () => Promise<void>;
+  /** Open Privy's "export key" flow (only safe place for raw key handling). */
+  exportKey: () => Promise<void>;
 };
 
 const WalletCtx = createContext<WalletState | null>(null);
-
-export function WalletProvider({ children }: { children: React.ReactNode }) {
-  const [account, setAccount] = useState<Account | null>(null);
-  const [privateKey, setPrivKey] = useState<`0x${string}` | null>(null);
-  const [ownerAddress, setOwnerAddress] = useState<string | null>(null);
-  const [autoConnected, setAutoConnected] = useState(false);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const wasConnected = window.localStorage.getItem("judgix.connected") === "1";
-    if (wasConnected) {
-      const pk = loadOrCreatePrivateKey();
-      const acc = accountFromKey(pk);
-      setAccount(acc); setPrivKey(pk);
-    }
-    setAutoConnected(true);
-    // Seed with the configured admin so the UI reacts immediately, then try
-    // the on-chain view in case the contract exposes one.
-    if (CONFIGURED_ADMIN) setOwnerAddress(CONFIGURED_ADMIN);
-    fetchContractOwner()
-      .then(o => { if (o) setOwnerAddress(o); })
-      .catch(() => {});
-  }, []);
-
-  const connect = useCallback(async () => {
-    const pk = loadOrCreatePrivateKey();
-    const acc = accountFromKey(pk);
-    setAccount(acc); setPrivKey(pk);
-    if (typeof window !== "undefined") window.localStorage.setItem("judgix.connected", "1");
-  }, []);
-
-  const disconnect = useCallback(() => {
-    setAccount(null); setPrivKey(null);
-    if (typeof window !== "undefined") window.localStorage.removeItem("judgix.connected");
-  }, []);
-
-  const importKey = useCallback((pk: `0x${string}`) => {
-    setPrivateKey(pk);
-    const acc = accountFromKey(pk);
-    setAccount(acc); setPrivKey(pk);
-    if (typeof window !== "undefined") window.localStorage.setItem("judgix.connected", "1");
-  }, []);
-
-  const rotateKey = useCallback(() => {
-    const pk = generatePrivateKey();
-    setPrivateKey(pk);
-    const acc = accountFromKey(pk);
-    setAccount(acc); setPrivKey(pk);
-    if (typeof window !== "undefined") window.localStorage.setItem("judgix.connected", "1");
-  }, []);
-
-  const address = account?.address ?? null;
-  const isOwner = !!(address && ownerAddress && address.toLowerCase() === ownerAddress.toLowerCase());
-
-  return (
-    <WalletCtx.Provider
-      value={{
-        connected: !!account && autoConnected,
-        address,
-        account,
-        ownerAddress,
-        isOwner,
-        privateKey,
-        connect,
-        disconnect,
-        importKey,
-        rotateKey,
-      }}
-    >
-      {children}
-    </WalletCtx.Provider>
-  );
-}
 
 export function useWallet() {
   const v = useContext(WalletCtx);
@@ -111,7 +38,102 @@ export function useWallet() {
   return v;
 }
 
-export function _resetKeyAndDisconnect() {
-  clearPrivateKey();
-  if (typeof window !== "undefined") window.localStorage.removeItem("judgix.connected");
+export function WalletProvider({ children }: { children: React.ReactNode }) {
+  // When Privy isn't configured, expose a no-op provider so the rest of the
+  // app keeps rendering and shows clear "connect wallet" affordances.
+  if (!PRIVY_APP_ID) return <NoPrivyShell>{children}</NoPrivyShell>;
+  return <PrivyBackedWallet>{children}</PrivyBackedWallet>;
+}
+
+function NoPrivyShell({ children }: { children: React.ReactNode }) {
+  const value: WalletState = useMemo(() => ({
+    connected: false,
+    authenticated: false,
+    ready: true,
+    address: null,
+    account: null,
+    ownerAddress: CONFIGURED_ADMIN,
+    isOwner: false,
+    connect: async () => { console.warn("Privy is not configured"); },
+    disconnect: async () => {},
+    exportKey: async () => {},
+  }), []);
+  return <WalletCtx.Provider value={value}>{children}</WalletCtx.Provider>;
+}
+
+function PrivyBackedWallet({ children }: { children: React.ReactNode }) {
+  const { ready, authenticated, user, exportWallet } = usePrivy();
+  const { wallets } = useWallets();
+  const { login } = useLogin();
+  const { logout } = useLogout();
+
+  const [account, setAccount] = useState<Account | null>(null);
+  const [address, setAddress] = useState<string | null>(null);
+
+  // Pick the user's Privy embedded wallet (not an injected/external one).
+  const embedded = useMemo(
+    () => wallets.find(w => w.walletClientType === "privy") ?? wallets[0] ?? null,
+    [wallets],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!embedded || !authenticated) {
+      setAccount(null);
+      setAddress(null);
+      return;
+    }
+    (async () => {
+      try {
+        const provider = await embedded.getEthereumProvider();
+        const addr = embedded.address as `0x${string}`;
+        if (cancelled) return;
+        setAddress(addr);
+        setAccount(accountFromEip1193(provider, addr));
+      } catch (err) {
+        console.error("[Judgix] Failed to wire embedded wallet:", err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [embedded, authenticated]);
+
+  const connect = useCallback(async () => {
+    try {
+      await login();
+    } catch (err) {
+      console.error("[Judgix] Privy login failed:", err);
+    }
+  }, [login]);
+
+  const disconnect = useCallback(async () => {
+    try { await logout(); } catch {}
+    setAccount(null);
+    setAddress(null);
+  }, [logout]);
+
+  const exportKey = useCallback(async () => {
+    try { await exportWallet(); } catch (err) {
+      console.error("[Judgix] Export wallet failed:", err);
+    }
+  }, [exportWallet]);
+
+  const isOwner = !!(address && CONFIGURED_ADMIN && address.toLowerCase() === CONFIGURED_ADMIN);
+
+  const value: WalletState = {
+    connected: !!account && !!address,
+    authenticated,
+    ready,
+    address,
+    account,
+    ownerAddress: CONFIGURED_ADMIN,
+    isOwner,
+    connect,
+    disconnect,
+    exportKey,
+  };
+
+  // Reference `user` so eslint-disable noise doesn't surface in CI.
+  void user;
+
+  return <WalletCtx.Provider value={value}>{children}</WalletCtx.Provider>;
 }

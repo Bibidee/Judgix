@@ -40,7 +40,7 @@ const PK2 = required("TEST_WALLET_2_PRIVATE_KEY");
 const PK3 = required("TEST_WALLET_3_PRIVATE_KEY");
 const PK4 = required("TEST_WALLET_4_PRIVATE_KEY");
 
-const CONTRACT = (process.env.JUDGIX_ADDRESS || "0xE0e599492dF311a9152b87F27Cf6C179fC72cC6B").trim();
+const CONTRACT = (process.env.JUDGIX_ADDRESS || "0x528d6fD06122b8ce461c33B1c3Fb7062f5eae7ED").trim();
 const ENDPOINT = (process.env.JUDGIX_RPC || "https://studio.genlayer.com/api").trim();
 const CHAIN_ID = Number(process.env.JUDGIX_CHAIN_ID || 61999);
 

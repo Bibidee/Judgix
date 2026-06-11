@@ -4,6 +4,7 @@ import "./globals.css";
 import { TopNav } from "@/components/layout/TopNav";
 import { Footer } from "@/components/layout/Footer";
 import { WalletProvider } from "@/lib/wallet/WalletProvider";
+import { JudgixPrivyProvider } from "@/lib/privyClient";
 
 const fraunces = Fraunces({ subsets: ["latin"], variable: "--font-fraunces", display: "swap" });
 const plexSans = IBM_Plex_Sans({ subsets: ["latin"], weight: ["300", "400", "500", "600", "700"], variable: "--font-plex-sans", display: "swap" });
@@ -18,11 +19,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" className={`${fraunces.variable} ${plexSans.variable} ${plexMono.variable}`}>
       <body>
-        <WalletProvider>
-          <TopNav />
-          <main className="min-h-[calc(100vh-140px)]">{children}</main>
-          <Footer />
-        </WalletProvider>
+        <JudgixPrivyProvider>
+          <WalletProvider>
+            <TopNav />
+            <main className="min-h-[calc(100vh-140px)]">{children}</main>
+            <Footer />
+          </WalletProvider>
+        </JudgixPrivyProvider>
       </body>
     </html>
   );

@@ -1,13 +1,22 @@
 "use client";
 
-import type { Account, Address } from "viem";
+import type { Account } from "viem";
 import {
   JUDGIX_CONTRACT_ADDRESS,
   getClientForAccount,
   getReadOnlyClient,
 } from "./sdk";
-import { Campaign, CampaignReview, CampaignUpdate, Dispute, UpdateReview, DisputeReview } from "@/types";
-import { clampScore } from "@/lib/scoring";
+import type {
+  Campaign,
+  Verdict,
+  SanitisedEvidence,
+  Flag,
+  Appeal,
+  AppealVerdict,
+  CreatorReputation,
+  ProtocolStats,
+  ProtocolConfig,
+} from "@/types";
 
 type AnyJson = Record<string, any>;
 
@@ -30,7 +39,7 @@ async function readView(functionName: string, args: any[] = []): Promise<string>
   return typeof res === "string" ? res : (res == null ? "" : JSON.stringify(res));
 }
 
-type WriteOpts = { onHash?: (hash: string) => void; awaitReceipt?: boolean };
+type WriteOpts = { onHash?: (hash: string) => void; value?: bigint };
 
 async function writeMethod(
   account: Account,
@@ -43,31 +52,64 @@ async function writeMethod(
     address: JUDGIX_CONTRACT_ADDRESS,
     functionName,
     args,
-    value: BigInt(0),
+    value: opts.value ?? BigInt(0),
   });
   opts.onHash?.(hash);
-
   let receipt: any = null;
-  if (opts.awaitReceipt !== false) {
-    try {
-      receipt = await client.waitForTransactionReceipt({ hash });
-    } catch (err) {
-      // genlayer-js can throw a calldata decoder error while parsing the receipt
-      // even when the transaction itself was committed on-chain. The hash is the
-      // source of truth — callers (e.g. submit / update / flag pages) confirm
-      // success by polling contract state. Swallow the decode error here.
-      const msg = String((err as any)?.message || err);
-      if (!/out of bounds|position|invalid (utf-8|byte)|unexpected end/i.test(msg)) {
-        throw err;
-      }
-      // best-effort status read; ignore failures
-      receipt = null;
+  try {
+    receipt = await client.waitForTransactionReceipt({ hash, status: "FINALIZED" as any, retries: 200, interval: 3000 } as any);
+  } catch (err) {
+    const msg = String((err as any)?.message || err);
+    if (!/out of bounds|position|invalid (utf-8|byte)|unexpected end/i.test(msg)) {
+      throw err;
     }
+    try { receipt = await (client as any).getTransaction({ hash }); } catch { receipt = null; }
   }
   return { hash, receipt };
 }
 
-// ----- Reads -----
+// ---------------- Reads ----------------
+
+export async function fetchProtocolStats(): Promise<ProtocolStats | null> {
+  const raw = await readView("get_protocol_stats");
+  const obj = parse<AnyJson>(raw);
+  if (!obj) return null;
+  return {
+    campaigns: Number(obj.campaigns ?? obj.campaign_count ?? 0),
+    reviews: Number(obj.reviews ?? obj.review_count ?? 0),
+    appeals: Number(obj.appeals ?? obj.appeal_count ?? 0),
+    flags: Number(obj.flags ?? obj.flag_count ?? 0),
+  };
+}
+
+export async function fetchProtocolConfig(): Promise<ProtocolConfig | null> {
+  const raw = await readView("get_config");
+  const obj = parse<AnyJson>(raw);
+  if (!obj) return null;
+  return {
+    paused: !!obj.paused,
+    keeper: String(obj.keeper ?? ""),
+    evidenceSchemaVersion: String(obj.evidence_schema_version ?? obj.schema_version ?? ""),
+    reviewFeeWei: String(obj.review_fee_wei ?? "0"),
+    protocolFeesWei: String(obj.protocol_fees_wei ?? "0"),
+  };
+}
+
+export async function fetchCampaignIds(offset = 0, limit = 200): Promise<string[]> {
+  try {
+    const raw = await readView("list_campaigns", [String(offset), String(limit)]);
+    const arr = parse<string[]>(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+
+export async function fetchReviewedCampaignIds(): Promise<string[]> {
+  try {
+    const raw = await readView("get_reviewed_campaigns");
+    const arr = parse<string[]>(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
 
 export async function fetchCampaign(campaignId: string): Promise<Campaign | null> {
   const raw = await readView("get_campaign", [campaignId]);
@@ -76,39 +118,90 @@ export async function fetchCampaign(campaignId: string): Promise<Campaign | null
   return campaignFromJson(campaignId, obj);
 }
 
-export async function fetchCampaignReview(campaignId: string): Promise<CampaignReview | null> {
-  const raw = await readView("get_campaign_review", [campaignId]);
+export async function fetchVerdict(campaignId: string): Promise<Verdict | null> {
+  const raw = await readView("get_verdict", [campaignId]);
   const obj = parse<AnyJson>(raw);
   if (!obj) return null;
-  return reviewFromJson(campaignId, obj);
+  return verdictFromJson(campaignId, obj);
 }
 
-export async function fetchUpdate(updateId: string): Promise<CampaignUpdate | null> {
-  const raw = await readView("get_update", [updateId]);
+export async function fetchEvidence(campaignId: string): Promise<SanitisedEvidence | null> {
+  const raw = await readView("get_evidence", [campaignId]);
   const obj = parse<AnyJson>(raw);
   if (!obj) return null;
-  return updateFromJson(updateId, obj);
+  return {
+    campaignId,
+    evidenceSummary: String(obj.evidence_summary ?? ""),
+    proofType: String(obj.proof_type ?? ""),
+    documentHash: obj.document_hash ? String(obj.document_hash) : undefined,
+    thirdPartyVerification: obj.third_party_verification ? String(obj.third_party_verification) : undefined,
+    socialProofSummary: obj.social_proof_summary ? String(obj.social_proof_summary) : undefined,
+    beneficiaryRelationship: obj.beneficiary_relationship ? String(obj.beneficiary_relationship) : undefined,
+    redactionStatement: String(obj.redaction_statement ?? ""),
+    schemaVersion: obj.schema_version,
+    revealedAt: obj.revealed_at,
+  };
 }
 
-export async function fetchUpdateReview(updateId: string): Promise<UpdateReview | null> {
-  const raw = await readView("get_update_review", [updateId]);
-  const obj = parse<AnyJson>(raw);
-  if (!obj) return null;
-  return updateReviewFromJson(obj);
+export async function fetchFlagIdsForCampaign(campaignId: string): Promise<string[]> {
+  try {
+    const raw = await readView("get_flags_for_campaign", [campaignId]);
+    const arr = parse<string[]>(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
 }
 
-export async function fetchDispute(disputeId: string): Promise<Dispute | null> {
-  const raw = await readView("get_dispute", [disputeId]);
+export async function fetchFlag(flagId: string): Promise<Flag | null> {
+  const raw = await readView("get_flag", [flagId]);
   const obj = parse<AnyJson>(raw);
   if (!obj) return null;
-  return disputeFromJson(disputeId, obj);
+  return {
+    id: flagId,
+    campaignId: String(obj.campaign_id ?? ""),
+    reporter: String(obj.reporter ?? ""),
+    reason: String(obj.reason ?? ""),
+    createdAt: obj.created_at,
+  };
 }
 
-export async function fetchDisputeReview(disputeId: string): Promise<DisputeReview | null> {
-  const raw = await readView("get_dispute_review", [disputeId]);
+export async function fetchAppealIdsForCampaign(campaignId: string): Promise<string[]> {
+  try {
+    const raw = await readView("get_appeals_for_campaign", [campaignId]);
+    const arr = parse<string[]>(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+
+export async function fetchAppeal(appealId: string): Promise<Appeal | null> {
+  const raw = await readView("get_appeal", [appealId]);
   const obj = parse<AnyJson>(raw);
   if (!obj) return null;
-  return disputeReviewFromJson(obj);
+  return {
+    id: appealId,
+    campaignId: String(obj.campaign_id ?? ""),
+    creator: String(obj.creator ?? ""),
+    reason: String(obj.appeal_reason ?? obj.reason ?? ""),
+    status: (obj.status ?? "APPEALED") as any,
+    createdAt: obj.created_at,
+  };
+}
+
+export async function fetchAppealVerdict(appealId: string): Promise<AppealVerdict | null> {
+  const raw = await readView("get_appeal_verdict", [appealId]);
+  const obj = parse<AnyJson>(raw);
+  if (!obj) return null;
+  return {
+    appealId,
+    appealDecision: (obj.appeal_decision ?? "insufficient_new_evidence") as any,
+    newAuthenticityScore: Number(obj.new_authenticity_score ?? 0),
+    newEvidenceStrength: Number(obj.new_evidence_strength ?? 0),
+    newDonorRiskLevel: (obj.new_donor_risk_level ?? "medium") as any,
+    newRecommendedDonorAction: (obj.new_recommended_donor_action ?? "wait_for_more_evidence") as any,
+    confidence: Number(obj.confidence ?? 0),
+    reasoning: Array.isArray(obj.reasoning) ? obj.reasoning.map(String) : [],
+    changedFields: Array.isArray(obj.changed_fields) ? obj.changed_fields.map(String) : [],
+    reviewedAt: obj.reviewed_at,
+  };
 }
 
 export async function fetchCreatorCampaigns(creator: string): Promise<string[]> {
@@ -117,276 +210,218 @@ export async function fetchCreatorCampaigns(creator: string): Promise<string[]> 
   return Array.isArray(arr) ? arr : [];
 }
 
-export async function fetchProtocolStats(): Promise<AnyJson> {
-  const raw = await readView("get_protocol_stats");
-  return parse<AnyJson>(raw) ?? {};
-}
-
-export async function fetchCampaignIds(offset = 0, limit = 200): Promise<string[]> {
-  try {
-    const raw = await readView("list_campaigns", [String(offset), String(limit)]);
-    const arr = parse<string[]>(raw);
-    return Array.isArray(arr) ? arr : [];
-  } catch {
-    return [];
-  }
-}
-
-export async function fetchUpdateIdsForCampaign(campaignId: string): Promise<string[]> {
-  try {
-    const raw = await readView("get_updates_for_campaign", [campaignId]);
-    const arr = parse<string[]>(raw);
-    return Array.isArray(arr) ? arr : [];
-  } catch { return []; }
-}
-
-export async function fetchDisputeIdsForCampaign(campaignId: string): Promise<string[]> {
-  try {
-    const raw = await readView("get_disputes_for_campaign", [campaignId]);
-    const arr = parse<string[]>(raw);
-    return Array.isArray(arr) ? arr : [];
-  } catch { return []; }
-}
-
-export async function fetchUpdatesForCampaign(campaignId: string) {
-  const ids = await fetchUpdateIdsForCampaign(campaignId);
-  const results = await Promise.all(
-    ids.map(async (id) => {
-      const [u, r] = await Promise.all([
-        fetchUpdate(id).catch(() => null),
-        fetchUpdateReview(id).catch(() => null),
-      ]);
-      return u ? { ...u, review: r ?? undefined } : null;
-    }),
-  );
-  return results.filter(Boolean) as any[];
-}
-
-export async function fetchDisputesForCampaign(campaignId: string) {
-  const ids = await fetchDisputeIdsForCampaign(campaignId);
-  const results = await Promise.all(
-    ids.map(async (id) => {
-      const [d, r] = await Promise.all([
-        fetchDispute(id).catch(() => null),
-        fetchDisputeReview(id).catch(() => null),
-      ]);
-      return d ? { ...d, review: r ?? undefined } : null;
-    }),
-  );
-  return results.filter(Boolean) as any[];
-}
-
-export async function fetchCreatorReputation(creator: string): Promise<AnyJson | null> {
-  try {
-    const raw = await readView("get_creator_reputation", [creator]);
-    const obj = parse<AnyJson>(raw);
-    return obj && Object.keys(obj).length > 0 ? obj : null;
-  } catch { return null; }
-}
-
-/** Translate raw contract errors into user-friendly strings. */
-export function explainContractError(err: any): string {
-  const msg = String(err?.shortMessage || err?.message || err || "");
-  const m = msg.match(/UserError[^:]*:\s*([^\n}"]+)/i);
-  const inner = (m ? m[1] : msg).trim().replace(/['"`]+$/g, "");
-
-  if (/already exists/i.test(inner)) return "An on-chain record with that id already exists. Try again — a fresh id will be generated.";
-  if (/unknown campaign/i.test(inner)) return "This campaign is not on-chain yet. Submit it first.";
-  if (/unknown update/i.test(inner)) return "This update is not on-chain yet.";
-  if (/unknown dispute/i.test(inner)) return "This dispute is not on-chain yet.";
-  if (/already resolved/i.test(inner)) return "This dispute has already been resolved.";
-  if (/archived/i.test(inner)) return "Archived campaigns cannot be modified.";
-  if (/missing required/i.test(inner)) return `Missing required field — ${inner.replace(/^missing required field:\s*/i, "")}.`;
-  if (/insufficient (funds|balance)/i.test(inner)) return "Wallet balance is too low to pay gas. Use the faucet from the wallet popover.";
-  if (/owner/i.test(inner) || /unauthor/i.test(inner)) return "Only the contract owner can perform this action.";
-  if (/timed out/i.test(inner)) return "Timed out waiting for the verdict. The transaction may still finalize on-chain — refresh in a minute.";
-  return inner || "On-chain call failed. Check the wallet has gas and try again.";
-}
-
-// ----- Writes -----
-
-export async function createCampaignOnChain(account: Account, campaign: Campaign, opts: WriteOpts = {}) {
-  const payload = campaignToContractJson(campaign);
-  return writeMethod(account, "create_campaign", [campaign.id, JSON.stringify(payload)], opts);
-}
-
-export async function submitCampaignForReviewOnChain(account: Account, campaignId: string, opts: WriteOpts = {}) {
-  return writeMethod(account, "submit_campaign_for_review", [campaignId], opts);
-}
-
-export async function reviewCampaign(account: Account, campaignId: string, opts: WriteOpts = {}) {
-  return writeMethod(account, "review_campaign", [campaignId], opts);
-}
-
-export async function submitUpdateOnChain(
-  account: Account,
-  updateId: string,
-  campaignId: string,
-  update: AnyJson,
-  opts: WriteOpts = {},
-) {
-  return writeMethod(account, "submit_update", [updateId, campaignId, JSON.stringify(update)], opts);
-}
-
-export async function reviewUpdateOnChain(account: Account, updateId: string, opts: WriteOpts = {}) {
-  return writeMethod(account, "review_update", [updateId], opts);
-}
-
-export async function flagCampaignOnChain(
-  account: Account,
-  disputeId: string,
-  campaignId: string,
-  dispute: AnyJson,
-  opts: WriteOpts = {},
-) {
-  return writeMethod(account, "flag_campaign", [disputeId, campaignId, JSON.stringify(dispute)], opts);
-}
-
-export async function resolveDisputeOnChain(account: Account, disputeId: string, opts: WriteOpts = {}) {
-  return writeMethod(account, "resolve_dispute", [disputeId], opts);
-}
-
-// ----- Owner / role -----
-
-let _ownerCache: Address | null = null;
-export async function fetchContractOwner(): Promise<Address | null> {
-  if (_ownerCache) return _ownerCache;
-  try {
-    const client = getReadOnlyClient();
-    const res = (await client.readContract({
-      address: JUDGIX_CONTRACT_ADDRESS,
-      functionName: "owner",
-      args: [],
-    })) as any;
-    const addr = (typeof res === "string" ? res : res?.toString?.()) as Address | undefined;
-    if (addr) {
-      _ownerCache = addr;
-      return addr;
-    }
-  } catch {}
-  return null;
-}
-
-// ----- Marshalling -----
-
-export function campaignToContractJson(c: Campaign): AnyJson {
+export async function fetchCreatorReputation(creator: string): Promise<CreatorReputation | null> {
+  const raw = await readView("get_creator_reputation", [creator]);
+  const obj = parse<AnyJson>(raw);
+  if (!obj || Object.keys(obj).length === 0) return null;
   return {
-    title: c.title,
-    creator: c.creator,
-    category: c.category,
-    country: c.country,
-    funding_goal: c.fundingGoal,
-    currency: c.currency,
-    beneficiary: c.beneficiary,
-    wallet_address: c.walletAddress,
-    story: c.story,
-    use_of_funds: c.useOfFunds,
-    problem_statement: c.problemStatement,
-    who_benefits: c.whoBenefits,
-    timeline_of_events: c.timelineOfEvents,
-    evidence: c.evidence,
-    public_signals: c.publicSignals,
-    deadline: c.deadline,
+    creator: String(obj.creator ?? creator),
+    totalCampaigns: Number(obj.total_campaigns ?? 0),
+    reviewedCampaigns: Number(obj.reviewed_campaigns ?? 0),
+    verifiedCount: Number(obj.verified_count ?? 0),
+    cautionCount: Number(obj.caution_count ?? 0),
+    highRiskCount: Number(obj.high_risk_count ?? 0),
+    rejectedCount: Number(obj.rejected_count ?? 0),
+    averageAuthenticityScore: Number(obj.average_authenticity_score ?? 0),
+    averageEvidenceStrength: Number(obj.average_evidence_strength ?? 0),
+    lastDecision: String(obj.last_decision ?? ""),
+    lastDonorRiskLevel: String(obj.last_donor_risk_level ?? ""),
+    appealCount: Number(obj.appeal_count ?? 0),
+    flagCount: Number(obj.flag_count ?? 0),
   };
 }
+
+// ---------------- Writes ----------------
+
+export async function createCampaign(account: Account, campaignId: string, payload: AnyJson, opts: WriteOpts = {}) {
+  return writeMethod(account, "create_campaign", [campaignId, JSON.stringify(payload)], opts);
+}
+
+export async function commitEvidence(account: Account, campaignId: string, evidenceHash: string, opts: WriteOpts = {}) {
+  return writeMethod(account, "commit_evidence", [campaignId, evidenceHash], opts);
+}
+
+export async function submitSanitisedEvidence(account: Account, campaignId: string, evidence: AnyJson, opts: WriteOpts = {}) {
+  return writeMethod(account, "submit_sanitised_evidence", [campaignId, JSON.stringify(evidence)], opts);
+}
+
+export async function revealEvidence(account: Account, campaignId: string, evidence: AnyJson, salt: string, opts: WriteOpts = {}) {
+  return writeMethod(account, "reveal_evidence", [campaignId, JSON.stringify(evidence), salt], opts);
+}
+
+export async function cancelCampaign(account: Account, campaignId: string, opts: WriteOpts = {}) {
+  return writeMethod(account, "cancel_campaign", [campaignId], opts);
+}
+
+export async function triggerReview(account: Account, campaignId: string, feeWei: bigint, opts: Omit<WriteOpts, "value"> = {}) {
+  return writeMethod(account, "trigger_review", [campaignId], { ...opts, value: feeWei });
+}
+
+export async function flagCampaign(account: Account, campaignId: string, reason: string, opts: WriteOpts = {}) {
+  const flag = { reason };
+  return writeMethod(account, "flag_campaign", [campaignId, JSON.stringify(flag)], opts);
+}
+
+export async function submitAppeal(account: Account, campaignId: string, appealId: string, reason: string, opts: WriteOpts = {}) {
+  return writeMethod(account, "submit_appeal", [campaignId, appealId, reason], opts);
+}
+
+export async function commitAppealEvidence(account: Account, appealId: string, evidenceHash: string, opts: WriteOpts = {}) {
+  return writeMethod(account, "commit_appeal_evidence", [appealId, evidenceHash], opts);
+}
+
+export async function submitAppealEvidence(account: Account, appealId: string, evidence: AnyJson, opts: WriteOpts = {}) {
+  return writeMethod(account, "submit_appeal_evidence", [appealId, JSON.stringify(evidence)], opts);
+}
+
+export async function revealAppealEvidence(account: Account, appealId: string, evidence: AnyJson, salt: string, opts: WriteOpts = {}) {
+  return writeMethod(account, "reveal_appeal_evidence", [appealId, JSON.stringify(evidence), salt], opts);
+}
+
+export async function triggerAppealReview(account: Account, appealId: string, feeWei: bigint, opts: Omit<WriteOpts, "value"> = {}) {
+  return writeMethod(account, "trigger_appeal_review", [appealId], { ...opts, value: feeWei });
+}
+
+// ---------------- Admin (limited) ----------------
+
+export async function adminPause(account: Account, opts: WriteOpts = {}) {
+  return writeMethod(account, "admin_pause", [], opts);
+}
+export async function adminUnpause(account: Account, opts: WriteOpts = {}) {
+  return writeMethod(account, "admin_unpause", [], opts);
+}
+export async function adminSetReviewFee(account: Account, feeWei: string, opts: WriteOpts = {}) {
+  return writeMethod(account, "admin_set_review_fee", [feeWei], opts);
+}
+export async function adminSetKeeper(account: Account, keeper: string, opts: WriteOpts = {}) {
+  return writeMethod(account, "admin_set_keeper", [keeper], opts);
+}
+export async function adminSetSchemaVersion(account: Account, version: string, opts: WriteOpts = {}) {
+  return writeMethod(account, "admin_set_schema_version", [version], opts);
+}
+export async function adminSetHidden(account: Account, campaignId: string, hidden: boolean, opts: WriteOpts = {}) {
+  return writeMethod(account, "admin_set_hidden", [campaignId, hidden], opts);
+}
+export async function adminMarkSpam(account: Account, campaignId: string, reason: string, opts: WriteOpts = {}) {
+  return writeMethod(account, "admin_mark_spam", [campaignId, reason], opts);
+}
+
+// ---------------- Commit-reveal helpers ----------------
+
+const enc = (s: string) => new TextEncoder().encode(s);
+
+function bytesToHex(buf: Uint8Array): string {
+  return Array.from(buf, b => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** SHA-256(evidence_json + salt), prefixed `sha256:` to match the contract. */
+export async function buildEvidenceHash(evidenceJson: string, salt: string): Promise<string> {
+  if (typeof window === "undefined" || !window.crypto?.subtle) {
+    throw new Error("buildEvidenceHash requires a browser environment with SubtleCrypto");
+  }
+  const data = enc(evidenceJson + salt);
+  const digest = await window.crypto.subtle.digest("SHA-256", data);
+  return "sha256:" + bytesToHex(new Uint8Array(digest));
+}
+
+export function randomSalt(): string {
+  const buf = new Uint8Array(16);
+  if (typeof window !== "undefined" && window.crypto) {
+    window.crypto.getRandomValues(buf);
+  } else {
+    for (let i = 0; i < buf.length; i++) buf[i] = Math.floor(Math.random() * 256);
+  }
+  return bytesToHex(buf);
+}
+
+// ---------------- Marshalling ----------------
 
 export function campaignFromJson(id: string, j: AnyJson): Campaign {
   return {
     id,
-    creator: j.creator ?? "",
-    title: j.title ?? "",
-    category: j.category ?? "",
-    country: j.country ?? "",
-    fundingGoal: String(j.funding_goal ?? j.fundingGoal ?? ""),
-    currency: j.currency ?? "USD",
-    beneficiary: j.beneficiary ?? "",
-    walletAddress: j.wallet_address ?? j.walletAddress ?? "",
-    story: j.story ?? "",
-    useOfFunds: j.use_of_funds ?? j.useOfFunds ?? "",
-    problemStatement: j.problem_statement ?? j.problemStatement ?? "",
-    whoBenefits: j.who_benefits ?? j.whoBenefits ?? "",
-    timelineOfEvents: j.timeline_of_events ?? j.timelineOfEvents ?? "",
-    evidence: Array.isArray(j.evidence) ? j.evidence : [],
-    publicSignals: Array.isArray(j.public_signals ?? j.publicSignals) ? (j.public_signals ?? j.publicSignals) : [],
-    status: (j.status ?? "DRAFT") as any,
-    deadline: j.deadline,
-    createdAt: Number(j.created_at ?? j.createdAt ?? 0) * (String(j.created_at ?? "").length === 10 ? 1000 : 1) || Date.now(),
-    updatedAt: Number(j.updated_at ?? j.updatedAt ?? 0) || Date.now(),
+    creator: String(j.creator ?? ""),
+    title: String(j.title ?? ""),
+    category: String(j.category ?? ""),
+    fundingGoal: Number(j.funding_goal ?? j.fundingGoal ?? 0),
+    story: String(j.story ?? ""),
+    beneficiarySummary: String(j.beneficiary_summary ?? ""),
+    regionSummary: String(j.region_summary ?? ""),
+    useOfFunds: Array.isArray(j.use_of_funds)
+      ? j.use_of_funds.map((u: any) => ({ item: String(u.item ?? ""), amount: Number(u.amount ?? 0) }))
+      : [],
+    timeline: String(j.timeline ?? ""),
+    publicProofLinks: Array.isArray(j.public_proof_links) ? j.public_proof_links.map(String) : [],
+    riskDisclosure: String(j.risk_disclosure ?? ""),
+    status: (j.status ?? "CREATED") as any,
+    schemaVersion: j.schema_version,
+    createdAt: j.created_at,
+    authenticityScore: j.authenticity_score != null ? Number(j.authenticity_score) : undefined,
+    donorRiskLevel: j.donor_risk_level,
+    decision: j.decision,
   };
 }
 
-export function reviewFromJson(campaignId: string, j: AnyJson): CampaignReview {
+export function verdictFromJson(campaignId: string, j: AnyJson): Verdict {
   return {
-    id: String(j.review_id ?? j.id ?? `REV-${Date.now()}`),
     campaignId,
-    verdict: String(j.verdict ?? "NEEDS_MANUAL_REVIEW"),
-    authenticityScore: clampScore(Number(j.authenticity_score ?? 0)),
-    riskLevel: (j.risk_level ?? "MEDIUM") as any,
-    evidenceQuality: String(j.evidence_quality ?? "NONE"),
-    storyConsistency: String(j.story_consistency ?? "WEAK"),
-    publicSignalStrength: String(j.public_signal_strength ?? "NONE"),
-    plagiarismRisk: String(j.plagiarism_risk ?? "LOW"),
-    fundingGoalRealism: String(j.funding_goal_realism ?? "QUESTIONABLE"),
-    redFlags: Array.isArray(j.red_flags) ? j.red_flags.map(String) : [],
-    positiveSignals: Array.isArray(j.positive_signals) ? j.positive_signals.map(String) : [],
-    recommendedAction: String(j.recommended_action ?? ""),
-    reasoningSummary: String(j.reasoning_summary ?? ""),
-    createdAt: Number(j.created_at ?? Date.now()),
-    reviewTxHash: j.tx_hash,
-    confidence: j.confidence ?? "MODERATE",
+    authenticityScore: Number(j.authenticity_score ?? 0),
+    evidenceStrength: Number(j.evidence_strength ?? 0),
+    donorRiskLevel: (j.donor_risk_level ?? "medium") as any,
+    decision: (j.decision ?? "caution") as any,
+    confidence: Number(j.confidence ?? 0),
+    recommendedDonorAction: (j.recommended_donor_action ?? "wait_for_more_evidence") as any,
+    reasoning: Array.isArray(j.reasoning) ? j.reasoning.map(String) : [],
+    riskFlags: Array.isArray(j.risk_flags) ? j.risk_flags.map(String) : [],
+    requiredImprovements: Array.isArray(j.required_improvements) ? j.required_improvements.map(String) : [],
+    reviewedAt: j.reviewed_at,
+    reviewer: j.reviewer,
   };
 }
 
-export function updateFromJson(id: string, j: AnyJson): CampaignUpdate {
+/** Build the JSON payload the contract expects from a Campaign draft. */
+export function campaignToContractJson(c: Partial<Campaign>): AnyJson {
   return {
-    id,
-    campaignId: j.campaign_id ?? "",
-    title: j.title ?? "",
-    body: j.body ?? "",
-    amountSpent: String(j.amount_spent ?? ""),
-    evidenceLinks: Array.isArray(j.evidence_links) ? j.evidence_links : [],
-    fundUsageExplanation: j.fund_usage_explanation ?? "",
-    nextSteps: j.next_steps ?? "",
-    createdAt: Number(j.created_at ?? Date.now()),
+    title: c.title ?? "",
+    category: c.category ?? "",
+    story: c.story ?? "",
+    funding_goal: Number(c.fundingGoal ?? 0),
+    beneficiary_summary: c.beneficiarySummary ?? "",
+    region_summary: c.regionSummary ?? "",
+    use_of_funds: (c.useOfFunds ?? []).map(u => ({ item: u.item, amount: Number(u.amount) })),
+    timeline: c.timeline ?? "",
+    public_proof_links: c.publicProofLinks ?? [],
+    risk_disclosure: c.riskDisclosure ?? "",
   };
 }
 
-export function updateReviewFromJson(j: AnyJson): UpdateReview {
-  return {
-    verdict: String(j.verdict ?? "UPDATE_NEEDS_MORE_EVIDENCE"),
-    trustDelta: Number(j.trust_delta ?? 0),
-    riskDelta: Number(j.risk_delta ?? 0),
-    spendingAlignment: String(j.spending_alignment ?? "NONE"),
-    evidenceQuality: String(j.evidence_quality ?? "NONE"),
-    concerns: Array.isArray(j.concerns) ? j.concerns : [],
-    positiveSignals: Array.isArray(j.positive_signals) ? j.positive_signals : [],
-    reasoningSummary: String(j.reasoning_summary ?? ""),
-    createdAt: Number(j.created_at ?? Date.now()),
+/** Build the sanitised-evidence JSON payload the contract expects. */
+export function evidenceToContractJson(e: Partial<SanitisedEvidence>): AnyJson {
+  const out: AnyJson = {
+    evidence_summary: e.evidenceSummary ?? "",
+    proof_type: e.proofType ?? "",
+    redaction_statement: e.redactionStatement ?? "",
   };
+  if (e.documentHash) out.document_hash = e.documentHash;
+  if (e.thirdPartyVerification) out.third_party_verification = e.thirdPartyVerification;
+  if (e.socialProofSummary) out.social_proof_summary = e.socialProofSummary;
+  if (e.beneficiaryRelationship) out.beneficiary_relationship = e.beneficiaryRelationship;
+  return out;
 }
 
-export function disputeFromJson(id: string, j: AnyJson): Dispute {
-  return {
-    id,
-    campaignId: j.campaign_id ?? "",
-    reporter: j.reporter ?? "",
-    reason: j.reason ?? "",
-    description: j.description ?? "",
-    evidence: j.evidence ?? "",
-    severity: (j.severity ?? "MEDIUM") as any,
-    createdAt: Number(j.created_at ?? Date.now()),
-  };
-}
-
-export function disputeReviewFromJson(j: AnyJson): DisputeReview {
-  return {
-    verdict: String(j.verdict ?? "INSUFFICIENT_EVIDENCE"),
-    campaignAction: String(j.campaign_action ?? "NO_ACTION"),
-    trustDelta: Number(j.trust_delta ?? 0),
-    riskDelta: Number(j.risk_delta ?? 0),
-    confirmedIssues: Array.isArray(j.confirmed_issues) ? j.confirmed_issues : [],
-    unconfirmedIssues: Array.isArray(j.unconfirmed_issues) ? j.unconfirmed_issues : [],
-    reasoningSummary: String(j.reasoning_summary ?? ""),
-    createdAt: Number(j.created_at ?? Date.now()),
-  };
+/** User-friendly translation of contract UserError messages. */
+export function explainContractError(err: any): string {
+  const msg = String(err?.shortMessage || err?.message || err || "");
+  const inner = msg.match(/UserError[^:]*:\s*([^\n}"]+)/i)?.[1]?.trim() ?? msg;
+  if (/protocol paused/i.test(inner)) return "The Judgix protocol is paused by the admin. Try again later.";
+  if (/campaign exists/i.test(inner)) return "A campaign with that id already exists. Refresh and try again.";
+  if (/unknown campaign/i.test(inner)) return "No campaign with that id is on-chain yet.";
+  if (/creator only/i.test(inner)) return "Only the campaign creator can perform this action.";
+  if (/owner only/i.test(inner)) return "Only the protocol admin can perform this action.";
+  if (/missing campaign field|missing evidence field/i.test(inner)) return inner;
+  if (/review fee/i.test(inner)) return "Review fee was not provided correctly. Refresh the configured fee and retry.";
+  if (/already reviewed|already verdict/i.test(inner)) return "This campaign already has a verdict on-chain.";
+  if (/not ready/i.test(inner)) return "The campaign is not in a state that can be reviewed yet.";
+  if (/insufficient (funds|balance)/i.test(inner)) return "Wallet balance is too low to pay the review fee + gas.";
+  if (/timed out/i.test(inner)) return "Timed out waiting for the verdict. The transaction may still finalize on-chain.";
+  return inner || "On-chain call failed. Check the wallet has gas and try again.";
 }

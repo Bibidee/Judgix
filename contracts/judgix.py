@@ -3,132 +3,64 @@
 
 from genlayer import *
 import json
+import hashlib
 
-CAMPAIGN_VERDICTS = (
-    "VERIFIED",
-    "LIKELY_AUTHENTIC",
-    "NEEDS_MORE_EVIDENCE",
-    "PARTIALLY_SUPPORTED",
-    "RISKY",
-    "HIGH_RISK",
-    "SUSPICIOUS",
-    "LIKELY_FRAUDULENT",
-    "REJECTED",
-)
+DONOR_RISK_LEVELS = ("low", "medium", "high", "critical")
+DECISIONS = ("verified", "caution", "high_risk", "reject")
+DONOR_ACTIONS = ("support", "support_with_caution", "wait_for_more_evidence", "avoid")
+APPEAL_DECISIONS = ("uphold", "improve", "worsen", "insufficient_new_evidence")
+DEFAULT_REVIEW_FEE_WEI = 10_000_000_000_000_000  # 0.01 GEN
 
-UPDATE_VERDICTS = (
-    "UPDATE_CONFIRMS_PROGRESS",
-    "UPDATE_PARTIALLY_SUPPORTS_PROGRESS",
-    "UPDATE_NEEDS_MORE_EVIDENCE",
-    "UPDATE_INCONSISTENT",
-    "UPDATE_RAISES_RISK",
-    "UPDATE_SUSPICIOUS",
-)
 
-DISPUTE_VERDICTS = (
-    "DISPUTE_CONFIRMED",
-    "DISPUTE_PARTIALLY_VALID",
-    "DISPUTE_REJECTED",
-    "INSUFFICIENT_EVIDENCE",
-    "CAMPAIGN_SHOULD_BE_SUSPENDED",
-    "CAMPAIGN_CAN_CONTINUE",
-)
-
-RISK_LEVELS = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
-
-EVIDENCE_QUALITY = (
-    "NONE",
-    "WEAK",
-    "PARTIAL",
-    "MODERATE",
-    "STRONG",
-    "VERY_STRONG",
-)
-
-STORY_CONSISTENCY = (
-    "WEAK",
-    "GOOD",
-    "STRONG",
-    "VERY_STRONG",
-)
-
-PUBLIC_SIGNAL_STRENGTH = (
-    "NONE",
-    "WEAK",
-    "PARTIAL",
-    "MODERATE",
-    "STRONG",
-)
-
-PLAGIARISM_RISK = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
-
-FUNDING_GOAL_REALISM = (
-    "UNREASONABLE",
-    "QUESTIONABLE",
-    "REASONABLE",
-    "WELL_JUSTIFIED",
-)
-
-SPENDING_ALIGNMENT = (
-    "NONE",
-    "WEAK",
-    "PARTIAL",
-    "MODERATE",
-    "STRONG",
-)
-
-CAMPAIGN_ACTIONS = (
-    "NO_ACTION",
-    "NEEDS_MORE_EVIDENCE",
-    "RISKY",
-    "SUSPICIOUS",
-    "SUSPENDED",
-    "REJECTED",
-)
+@gl.evm.contract_interface
+class _Recipient:
+    class View:
+        pass
+    class Write:
+        pass
 
 
 class Judgix(gl.Contract):
     owner: Address
+    paused: bool
+    keeper: str
+    evidence_schema_version: str
+    review_fee_wei: u256
+    protocol_fees_wei: u256
 
     campaign_count: u256
     review_count: u256
-    update_count: u256
-    dispute_count: u256
+    appeal_count: u256
+    flag_count: u256
 
     campaigns: TreeMap[str, str]
-    campaign_reviews: TreeMap[str, str]
-    campaign_similarity_reviews: TreeMap[str, str]
+    evidence_records: TreeMap[str, str]
+    verdicts: TreeMap[str, str]
+    appeals: TreeMap[str, str]
+    appeal_verdicts: TreeMap[str, str]
+    flags: TreeMap[str, str]
 
-    campaign_updates: TreeMap[str, str]
-    update_reviews: TreeMap[str, str]
-
-    disputes: TreeMap[str, str]
-    dispute_reviews: TreeMap[str, str]
-
-    creator_campaigns: TreeMap[str, str]
-    creator_reputation: TreeMap[str, str]
-
-    protocol_stats: TreeMap[str, str]
-
-    # Global / per-campaign indices to make the contract listable without an off-chain crawler.
-    # campaign_index["all"] = JSON list of campaign_id strings (insertion order)
-    # updates_by_campaign[campaign_id] = JSON list of update_id strings
-    # disputes_by_campaign[campaign_id] = JSON list of dispute_id strings
     campaign_index: TreeMap[str, str]
-    updates_by_campaign: TreeMap[str, str]
-    disputes_by_campaign: TreeMap[str, str]
+    reviewed_index: TreeMap[str, str]
+    creator_campaigns: TreeMap[str, str]
+    flags_by_campaign: TreeMap[str, str]
+    appeals_by_campaign: TreeMap[str, str]
+    hidden_campaigns: TreeMap[str, str]
+    creator_reputation: TreeMap[str, str]
 
     def __init__(self) -> None:
         self.owner = gl.message.sender_address
-
+        self.paused = False
+        self.keeper = ""
+        self.evidence_schema_version = "judgix-sanitised-evidence-1"
+        self.review_fee_wei = u256(DEFAULT_REVIEW_FEE_WEI)
+        self.protocol_fees_wei = u256(0)
         self.campaign_count = u256(0)
         self.review_count = u256(0)
-        self.update_count = u256(0)
-        self.dispute_count = u256(0)
+        self.appeal_count = u256(0)
+        self.flag_count = u256(0)
 
-    # ---------------------------------------------------------------------
-    # Internal helpers
-    # ---------------------------------------------------------------------
+    # ----------------------------- helpers -----------------------------
 
     def _fail(self, message: str) -> None:
         raise gl.vm.UserError(message)
@@ -136,854 +68,756 @@ class Judgix(gl.Contract):
     def _sender(self) -> str:
         return str(gl.message.sender_address)
 
-    def _marker(self) -> str:
-        return str(self.campaign_count + self.review_count + self.update_count + self.dispute_count)
+    def _only_owner(self) -> None:
+        if gl.message.sender_address != self.owner:
+            self._fail("owner only")
 
-    def _safe_json_obj(self, raw: str) -> dict:
-        if not raw:
-            return {}
+    def _require_live(self) -> None:
+        if self.paused:
+            self._fail("protocol paused")
+
+    def _now(self) -> str:
+        return str(gl.message_raw.get("datetime", ""))
+
+    def _obj(self, raw: str) -> dict:
         try:
-            data = json.loads(raw)
+            data = json.loads(raw or "{}")
             if isinstance(data, dict):
                 return data
-            return {}
         except Exception:
-            return {}
+            pass
+        return {}
 
-    def _safe_json_list(self, raw: str) -> list:
-        if not raw:
-            return []
+    def _list(self, raw: str) -> list:
         try:
-            data = json.loads(raw)
+            data = json.loads(raw or "[]")
             if isinstance(data, list):
                 return data
-            return []
         except Exception:
-            return []
+            pass
+        return []
 
-    def _clamp_int(self, value, low: int, high: int) -> int:
+    def _dumps(self, data: dict) -> str:
+        return json.dumps(data, separators=(",", ":"), sort_keys=True)
+
+    def _append(self, store: TreeMap[str, str], key: str, value: str) -> None:
+        items = self._list(store.get(key, "[]"))
+        exists = False
+        for item in items:
+            if str(item) == value:
+                exists = True
+        if not exists:
+            items.append(value)
+        store[key] = json.dumps(items, separators=(",", ":"))
+
+    def _clamp(self, value, low: int, high: int) -> int:
         try:
             n = int(value)
         except Exception:
-            n = 0
-
+            n = low
         if n < low:
             return low
         if n > high:
             return high
         return n
 
-    def _clean_list(self, raw, max_items: int, max_len: int) -> list:
-        if not isinstance(raw, list):
-            raw = [str(raw)]
+    def _s(self, value, max_len: int) -> str:
+        return str(value or "").strip()[:max_len]
 
-        clean = []
-        for item in raw:
-            value = str(item).strip()
-            if value and len(clean) < max_items:
-                clean.append(value[:max_len])
-
-        return clean
-
-    def _append_index(self, store: TreeMap[str, str], key: str, value: str) -> None:
-        items = self._safe_json_list(store.get(key, "[]"))
-
-        exists = False
-        for item in items:
-            if str(item) == value:
-                exists = True
-
-        if not exists:
-            items.append(value)
-
-        store[key] = json.dumps(items)
-
-    def _load_reputation(self, creator: str) -> dict:
-        raw = self.creator_reputation.get(creator, "")
-        rep = self._safe_json_obj(raw)
-
-        if not rep:
-            rep = {
-                "creator": creator,
-                "campaigns_created": 0,
-                "verified_campaigns": 0,
-                "risky_campaigns": 0,
-                "rejected_campaigns": 0,
-                "updates_submitted": 0,
-                "disputes_received": 0,
-                "disputes_confirmed": 0,
-                "reputation_score": 0,
-                "risk_score": 0,
-            }
-
-        if "creator" not in rep:
-            rep["creator"] = creator
-        if "campaigns_created" not in rep:
-            rep["campaigns_created"] = 0
-        if "verified_campaigns" not in rep:
-            rep["verified_campaigns"] = 0
-        if "risky_campaigns" not in rep:
-            rep["risky_campaigns"] = 0
-        if "rejected_campaigns" not in rep:
-            rep["rejected_campaigns"] = 0
-        if "updates_submitted" not in rep:
-            rep["updates_submitted"] = 0
-        if "disputes_received" not in rep:
-            rep["disputes_received"] = 0
-        if "disputes_confirmed" not in rep:
-            rep["disputes_confirmed"] = 0
-        if "reputation_score" not in rep:
-            rep["reputation_score"] = 0
-        if "risk_score" not in rep:
-            rep["risk_score"] = 0
-
-        return rep
-
-    def _save_reputation(self, creator: str, rep: dict) -> None:
-        self.creator_reputation[creator] = json.dumps(rep, sort_keys=True)
+    def _clean_list(self, value, max_items: int, max_len: int) -> list:
+        if not isinstance(value, list):
+            value = []
+        out = []
+        for item in value:
+            text = str(item or "").strip()
+            if text and len(out) < max_items:
+                out.append(text[:max_len])
+        return out
 
     def _extract_json(self, raw) -> dict:
         if isinstance(raw, dict):
             return raw
-
         text = str(raw or "").strip()
-
         if text.startswith("```"):
             text = text.strip("`").strip()
             if text.lower().startswith("json"):
                 text = text[4:].strip()
-
         start = text.find("{")
         end = text.rfind("}")
-
-        if start == -1 or end == -1 or end <= start:
+        if start < 0 or end <= start:
             return {}
-
-        candidate = text[start : end + 1]
-
         try:
-            data = json.loads(candidate)
+            data = json.loads(text[start:end + 1])
             if isinstance(data, dict):
                 return data
-            return {}
         except Exception:
-            return {}
+            pass
+        return {}
 
-    # ---------------------------------------------------------------------
-    # Deterministic campaign writes
-    # ---------------------------------------------------------------------
+    def _hash(self, evidence_json: str, salt: str) -> str:
+        return "sha256:" + hashlib.sha256((str(evidence_json) + str(salt)).encode("utf-8")).hexdigest()
+
+    def _norm_hash(self, raw: str) -> str:
+        value = str(raw or "").strip().lower()
+        if not value:
+            return ""
+        if value.startswith("sha256:"):
+            return value
+        if len(value) == 64:
+            return "sha256:" + value
+        return value
+
+    def _load_campaign(self, campaign_id: str) -> dict:
+        raw = self.campaigns.get(campaign_id, "")
+        if not raw:
+            self._fail("unknown campaign")
+        data = self._obj(raw)
+        if not data:
+            self._fail("corrupt campaign")
+        return data
+
+    def _save_campaign(self, campaign_id: str, data: dict) -> None:
+        self.campaigns[campaign_id] = self._dumps(data)
+
+    def _creator(self, campaign: dict) -> str:
+        return str(campaign.get("creator", "") or "")
+
+    def _only_creator(self, campaign: dict) -> None:
+        if self._creator(campaign).lower() != self._sender().lower():
+            self._fail("creator only")
+
+    def _validate_campaign(self, data: dict) -> None:
+        required = ("title", "category", "story", "funding_goal", "beneficiary_summary", "use_of_funds", "timeline", "region_summary")
+        for key in required:
+            if data.get(key) in (None, "", []):
+                self._fail("missing campaign field: " + key)
+
+    def _validate_evidence(self, data: dict) -> None:
+        required = ("evidence_summary", "proof_type", "redaction_statement")
+        for key in required:
+            if data.get(key) in (None, ""):
+                self._fail("missing evidence field: " + key)
+
+    def _rep(self, creator: str) -> dict:
+        rep = self._obj(self.creator_reputation.get(creator, ""))
+        if not rep:
+            rep = {
+                "creator": creator,
+                "total_campaigns": 0,
+                "reviewed_campaigns": 0,
+                "verified_count": 0,
+                "caution_count": 0,
+                "high_risk_count": 0,
+                "rejected_count": 0,
+                "average_authenticity_score": 0,
+                "average_evidence_strength": 0,
+                "last_decision": "",
+                "last_donor_risk_level": "",
+                "appeal_count": 0,
+                "flag_count": 0,
+            }
+        return rep
+
+    def _save_rep(self, creator: str, rep: dict) -> None:
+        self.creator_reputation[creator] = self._dumps(rep)
+
+    def _apply_rep(self, creator: str, verdict: dict) -> None:
+        rep = self._rep(creator)
+        reviewed = int(rep.get("reviewed_campaigns", 0))
+        new_count = reviewed + 1
+        score = int(verdict.get("authenticity_score", 0))
+        evidence = int(verdict.get("evidence_strength", 0))
+        rep["reviewed_campaigns"] = new_count
+        rep["average_authenticity_score"] = int(((int(rep.get("average_authenticity_score", 0)) * reviewed) + score) / new_count)
+        rep["average_evidence_strength"] = int(((int(rep.get("average_evidence_strength", 0)) * reviewed) + evidence) / new_count)
+        decision = str(verdict.get("decision", "caution"))
+        risk = str(verdict.get("donor_risk_level", "medium"))
+        rep["last_decision"] = decision
+        rep["last_donor_risk_level"] = risk
+        if decision == "verified":
+            rep["verified_count"] = int(rep.get("verified_count", 0)) + 1
+        elif decision == "caution":
+            rep["caution_count"] = int(rep.get("caution_count", 0)) + 1
+        elif decision == "high_risk":
+            rep["high_risk_count"] = int(rep.get("high_risk_count", 0)) + 1
+        elif decision == "reject":
+            rep["rejected_count"] = int(rep.get("rejected_count", 0)) + 1
+        self._save_rep(creator, rep)
+
+    def _normalise_verdict(self, parsed: dict) -> dict:
+        risk = str(parsed.get("donor_risk_level", "medium")).lower()
+        if risk not in DONOR_RISK_LEVELS:
+            risk = "medium"
+        decision = str(parsed.get("decision", "caution")).lower()
+        if decision not in DECISIONS:
+            decision = "caution"
+        action = str(parsed.get("recommended_donor_action", "wait_for_more_evidence")).lower()
+        if action not in DONOR_ACTIONS:
+            action = "wait_for_more_evidence"
+        return {
+            "authenticity_score": self._clamp(parsed.get("authenticity_score", 0), 0, 100),
+            "evidence_strength": self._clamp(parsed.get("evidence_strength", 0), 0, 100),
+            "donor_risk_level": risk,
+            "decision": decision,
+            "confidence": self._clamp(parsed.get("confidence", 0), 0, 100),
+            "recommended_donor_action": action,
+            "reasoning": self._clean_list(parsed.get("reasoning", []), 8, 500),
+            "risk_flags": self._clean_list(parsed.get("risk_flags", []), 10, 240),
+            "required_improvements": self._clean_list(parsed.get("required_improvements", []), 10, 240),
+        }
+
+    def _normalise_appeal_verdict(self, parsed: dict, previous: dict) -> dict:
+        appeal_decision = str(parsed.get("appeal_decision", "insufficient_new_evidence")).lower()
+        if appeal_decision not in APPEAL_DECISIONS:
+            appeal_decision = "insufficient_new_evidence"
+        risk = str(parsed.get("new_donor_risk_level", previous.get("donor_risk_level", "medium"))).lower()
+        if risk not in DONOR_RISK_LEVELS:
+            risk = str(previous.get("donor_risk_level", "medium"))
+        action = str(parsed.get("new_recommended_donor_action", previous.get("recommended_donor_action", "wait_for_more_evidence"))).lower()
+        if action not in DONOR_ACTIONS:
+            action = str(previous.get("recommended_donor_action", "wait_for_more_evidence"))
+        return {
+            "appeal_decision": appeal_decision,
+            "new_authenticity_score": self._clamp(parsed.get("new_authenticity_score", previous.get("authenticity_score", 0)), 0, 100),
+            "new_evidence_strength": self._clamp(parsed.get("new_evidence_strength", previous.get("evidence_strength", 0)), 0, 100),
+            "new_donor_risk_level": risk,
+            "new_recommended_donor_action": action,
+            "confidence": self._clamp(parsed.get("confidence", 0), 0, 100),
+            "reasoning": self._clean_list(parsed.get("reasoning", []), 8, 500),
+            "changed_fields": self._clean_list(parsed.get("changed_fields", []), 8, 120),
+        }
+
+    # -------------------------- campaign/evidence --------------------------
 
     @gl.public.write
     def create_campaign(self, campaign_id: str, campaign_json: str) -> str:
+        self._require_live()
         campaign_id = str(campaign_id).strip()
-
         if not campaign_id:
             self._fail("campaign_id required")
-
         if self.campaigns.get(campaign_id, ""):
-            self._fail("campaign id already exists")
-
-        data = self._safe_json_obj(campaign_json)
-
+            self._fail("campaign exists")
+        data = self._obj(campaign_json)
         if not data:
-            self._fail("campaign_json must be a JSON object")
-
-        required = ("title", "creator", "funding_goal", "story")
-        for key in required:
-            if not data.get(key):
-                self._fail("missing required field: " + key)
-
-        creator = str(data.get("creator", "")).strip()
-        if not creator:
-            self._fail("creator required")
-
+            self._fail("campaign_json must be object")
+        self._validate_campaign(data)
+        creator = self._sender()
         data["campaign_id"] = campaign_id
         data["creator"] = creator
-        data["submitter"] = self._sender()
-        data["title"] = str(data.get("title", ""))[:180]
-        data["story"] = str(data.get("story", ""))[:4000]
-        data["status"] = "DRAFT"
-        data["created_at"] = self._marker()
-
-        self.campaigns[campaign_id] = json.dumps(data, sort_keys=True)
+        data["status"] = "CREATED"
+        data["schema_version"] = self.evidence_schema_version
+        data["created_at"] = self._now()
+        data["title"] = self._s(data.get("title"), 180)
+        data["category"] = self._s(data.get("category"), 80)
+        data["story"] = self._s(data.get("story"), 5000)
+        data["beneficiary_summary"] = self._s(data.get("beneficiary_summary"), 1000)
+        data["region_summary"] = self._s(data.get("region_summary"), 240)
+        data["timeline"] = self._s(data.get("timeline"), 500)
+        data["risk_disclosure"] = self._s(data.get("risk_disclosure"), 1000)
+        data["review_fee_required_wei"] = str(self.review_fee_wei)
+        self.campaigns[campaign_id] = self._dumps(data)
         self.campaign_count = self.campaign_count + u256(1)
-
-        self._append_index(self.creator_campaigns, creator, campaign_id)
-        self._append_index(self.campaign_index, "all", campaign_id)
-
-        rep = self._load_reputation(creator)
-        rep["campaigns_created"] = int(rep.get("campaigns_created", 0)) + 1
-        self._save_reputation(creator, rep)
-
+        self._append(self.campaign_index, "all", campaign_id)
+        self._append(self.creator_campaigns, creator, campaign_id)
+        rep = self._rep(creator)
+        rep["total_campaigns"] = int(rep.get("total_campaigns", 0)) + 1
+        self._save_rep(creator, rep)
         return campaign_id
 
     @gl.public.write
-    def submit_campaign_for_review(self, campaign_id: str) -> str:
+    def commit_evidence(self, campaign_id: str, evidence_hash: str) -> str:
+        self._require_live()
         campaign_id = str(campaign_id).strip()
-
-        raw = self.campaigns.get(campaign_id, "")
-        if not raw:
-            self._fail("unknown campaign")
-
-        data = self._safe_json_obj(raw)
-
-        if data.get("status") == "ARCHIVED":
-            self._fail("archived campaign cannot be submitted")
-
-        data["status"] = "PENDING_REVIEW"
-        data["submitted_for_review_at"] = self._marker()
-
-        self.campaigns[campaign_id] = json.dumps(data, sort_keys=True)
+        campaign = self._load_campaign(campaign_id)
+        self._only_creator(campaign)
+        if campaign.get("status") != "CREATED":
+            self._fail("campaign not CREATED")
+        h = self._norm_hash(evidence_hash)
+        if not h:
+            self._fail("evidence_hash required")
+        self.evidence_records[campaign_id] = self._dumps({
+            "campaign_id": campaign_id,
+            "mode": "commit_reveal",
+            "commitment_hash": h,
+            "revealed": False,
+            "committed_at": self._now(),
+        })
+        campaign["status"] = "EVIDENCE_COMMITTED"
+        campaign["evidence_mode"] = "commit_reveal"
+        campaign["evidence_committed_at"] = self._now()
+        self._save_campaign(campaign_id, campaign)
         return campaign_id
 
     @gl.public.write
-    def archive_campaign(self, campaign_id: str) -> str:
+    def submit_sanitised_evidence(self, campaign_id: str, evidence_json: str) -> str:
+        self._require_live()
         campaign_id = str(campaign_id).strip()
-
-        raw = self.campaigns.get(campaign_id, "")
-        if not raw:
-            self._fail("unknown campaign")
-
-        data = self._safe_json_obj(raw)
-        data["status"] = "ARCHIVED"
-        data["archived_at"] = self._marker()
-
-        self.campaigns[campaign_id] = json.dumps(data, sort_keys=True)
+        campaign = self._load_campaign(campaign_id)
+        self._only_creator(campaign)
+        if campaign.get("status") != "CREATED":
+            self._fail("direct evidence only from CREATED")
+        evidence = self._obj(evidence_json)
+        if not evidence:
+            self._fail("evidence_json must be object")
+        self._validate_evidence(evidence)
+        self.evidence_records[campaign_id] = self._dumps({
+            "campaign_id": campaign_id,
+            "mode": "direct_sanitised",
+            "evidence_json": evidence,
+            "revealed": True,
+            "submitted_at": self._now(),
+            "schema_version": self.evidence_schema_version,
+        })
+        campaign["status"] = "READY_FOR_REVIEW"
+        campaign["evidence_mode"] = "direct_sanitised"
+        campaign["evidence_submitted_at"] = self._now()
+        self._save_campaign(campaign_id, campaign)
         return campaign_id
 
-    # ---------------------------------------------------------------------
-    # Non-deterministic campaign review
-    # ---------------------------------------------------------------------
+    @gl.public.write
+    def reveal_evidence(self, campaign_id: str, evidence_json: str, salt: str) -> str:
+        self._require_live()
+        campaign_id = str(campaign_id).strip()
+        campaign = self._load_campaign(campaign_id)
+        self._only_creator(campaign)
+        if campaign.get("status") != "EVIDENCE_COMMITTED":
+            self._fail("not awaiting reveal")
+        record = self._obj(self.evidence_records.get(campaign_id, ""))
+        if self._norm_hash(record.get("commitment_hash", "")) != self._hash(evidence_json, salt):
+            self._fail("evidence hash mismatch")
+        evidence = self._obj(evidence_json)
+        if not evidence:
+            self._fail("evidence_json must be object")
+        self._validate_evidence(evidence)
+        record["evidence_json"] = evidence
+        record["salt_hash"] = self._hash("salt", salt)
+        record["revealed"] = True
+        record["revealed_at"] = self._now()
+        record["schema_version"] = self.evidence_schema_version
+        self.evidence_records[campaign_id] = self._dumps(record)
+        campaign["status"] = "READY_FOR_REVIEW"
+        campaign["evidence_revealed_at"] = self._now()
+        self._save_campaign(campaign_id, campaign)
+        return campaign_id
 
     @gl.public.write
-    def review_campaign(self, campaign_id: str) -> str:
+    def cancel_campaign(self, campaign_id: str) -> str:
+        self._require_live()
         campaign_id = str(campaign_id).strip()
+        campaign = self._load_campaign(campaign_id)
+        self._only_creator(campaign)
+        if campaign.get("status") not in ("CREATED", "EVIDENCE_COMMITTED", "READY_FOR_REVIEW", "APPEALED", "APPEAL_EVIDENCE_COMMITTED", "READY_FOR_APPEAL_REVIEW"):
+            self._fail("cannot cancel after review starts")
+        campaign["status"] = "CANCELLED"
+        campaign["cancelled_at"] = self._now()
+        self._save_campaign(campaign_id, campaign)
+        return campaign_id
 
-        campaign_json = self.campaigns.get(campaign_id, "")
-        if not campaign_json:
-            self._fail("unknown campaign")
+    # ---------------------- permissionless payable review ----------------------
+
+    @gl.public.write.payable
+    def trigger_review(self, campaign_id: str) -> str:
+        self._require_live()
+        campaign_id = str(campaign_id).strip()
+        campaign = self._load_campaign(campaign_id)
+        if campaign.get("status") != "READY_FOR_REVIEW":
+            self._fail("campaign not READY_FOR_REVIEW")
+        if gl.message.value < self.review_fee_wei:
+            self._fail("review fee too low")
+        evidence_record = self._obj(self.evidence_records.get(campaign_id, ""))
+        if not evidence_record or not evidence_record.get("revealed"):
+            self._fail("sanitised evidence not available")
+        self.protocol_fees_wei = self.protocol_fees_wei + gl.message.value
+        campaign["status"] = "UNDER_REVIEW"
+        campaign["review_triggered_by"] = self._sender()
+        campaign["review_triggered_at"] = self._now()
+        self._save_campaign(campaign_id, campaign)
+        campaign_json = self._dumps(campaign)
+        evidence_json = self._dumps(evidence_record.get("evidence_json", {}))
 
         def leader_review() -> str:
-            prompt = self._campaign_review_prompt(campaign_json)
+            prompt = self._campaign_review_prompt(campaign_json, evidence_json)
             raw = gl.nondet.exec_prompt(prompt, response_format="json")
-            parsed = self._extract_json(raw)
-            normalised = self._normalise_campaign_review(parsed)
-            return json.dumps(normalised, sort_keys=True)
+            return self._dumps(self._normalise_verdict(self._extract_json(raw)))
 
         review_json = gl.eq_principle.prompt_non_comparative(
             leader_review,
-            task=(
-                "Assess a crowdfunding campaign for authenticity, donor risk, evidence quality, "
-                "story consistency, public support, plagiarism risk, and funding realism."
-            ),
+            task="Evaluate a crowdfunding campaign's authenticity and donor safety from public campaign details and sanitised evidence summaries.",
             criteria=(
-                "The output must be strict JSON. The verdict must use one allowed campaign verdict. "
-                "The authenticity_score must be 0 to 100. The risk_level must be LOW, MEDIUM, HIGH, or CRITICAL. "
-                "The reasoning must distinguish weak evidence from active fraud and must not make legal accusations."
+                "Strict JSON only. authenticity_score/evidence_strength/confidence are 0-100. "
+                "donor_risk_level is low/medium/high/critical. decision is verified/caution/high_risk/reject. "
+                "recommended_donor_action is support/support_with_caution/wait_for_more_evidence/avoid. "
+                "Reasoning is evidence-based, avoids legal conclusions, and distinguishes weak evidence from active fraud."
             ),
         )
-
-        parsed = self._extract_json(review_json)
-        final_review = self._normalise_campaign_review(parsed)
-
+        final = self._normalise_verdict(self._extract_json(review_json))
+        if len(final.get("reasoning", [])) == 0:
+            self._fail("review reasoning required")
         review_id = "REV-" + str(self.review_count + u256(1))
-        final_review["review_id"] = review_id
-        final_review["campaign_id"] = campaign_id
-        final_review["reviewed_at"] = self._marker()
-
-        final_json = json.dumps(final_review, sort_keys=True)
-
-        self.campaign_reviews[campaign_id] = final_json
+        final["review_id"] = review_id
+        final["campaign_id"] = campaign_id
+        final["reviewed_at"] = self._now()
+        final["review_fee_paid_wei"] = str(gl.message.value)
+        self.verdicts[campaign_id] = self._dumps(final)
         self.review_count = self.review_count + u256(1)
+        campaign["status"] = "REVIEWED"
+        campaign["last_review_id"] = review_id
+        campaign["authenticity_score"] = final.get("authenticity_score", 0)
+        campaign["evidence_strength"] = final.get("evidence_strength", 0)
+        campaign["donor_risk_level"] = final.get("donor_risk_level", "medium")
+        campaign["decision"] = final.get("decision", "caution")
+        campaign["recommended_donor_action"] = final.get("recommended_donor_action", "wait_for_more_evidence")
+        campaign["reviewed_at"] = self._now()
+        self._save_campaign(campaign_id, campaign)
+        self._append(self.reviewed_index, "reviewed", campaign_id)
+        self._apply_rep(self._creator(campaign), final)
+        return self._dumps(final)
 
-        self._apply_campaign_review(campaign_id, final_review)
-
-        return final_json
-
-    def _campaign_review_prompt(self, campaign_json: str) -> str:
+    def _campaign_review_prompt(self, campaign_json: str, evidence_json: str) -> str:
         return (
-            "You are a validator on the Judgix decentralised review network.\n"
-            "Assess a crowdfunding campaign for donor risk and authenticity.\n\n"
-            "CAMPAIGN RECORD JSON:\n"
-            + campaign_json
-            + "\n\n"
-            "Assess:\n"
-            "- internal story consistency\n"
-            "- evidence relevance and strength\n"
-            "- public signal support and independent corroboration\n"
-            "- identity consistency\n"
-            "- plagiarism or copied story risk\n"
-            "- urgency realism\n"
-            "- funding goal realism\n"
-            "- use-of-funds clarity\n"
-            "- overall donor risk\n\n"
-            "Rules:\n"
-            "- Do not decide legal guilt.\n"
-            "- Do not accuse the creator of fraud unless evidence strongly supports it.\n"
-            "- Distinguish between weak evidence and active fraud.\n"
-            "- Use only allowed enum values.\n"
-            "- Return STRICT JSON ONLY, no prose, no markdown.\n\n"
-            "Return this JSON shape:\n"
+            "You are a GenLayer validator for Judgix, a decentralized crowdfunding campaign authenticity review layer.\n"
+            "Do NOT use fixed rules. Reason holistically about whether the campaign appears authentic, evidence-backed, realistic, and donor-safe.\n\n"
+            "CAMPAIGN JSON:\n" + campaign_json + "\n\nSANITISED EVIDENCE JSON:\n" + evidence_json +
+            "\n\nEvaluate story consistency, evidence strength, funding goal realism, beneficiary clarity, creator credibility from submitted facts, "
+            "use-of-funds clarity, social proof, suspicious urgency, duplicate/fake campaign risk, and donor safety.\n"
+            "Rules: no legal accusations; do not claim raw private documents were reviewed; distinguish weak evidence from active fraud.\n"
+            "Return STRICT JSON ONLY:\n"
             "{\n"
-            '  "verdict": "LIKELY_AUTHENTIC",\n'
-            '  "authenticity_score": 75,\n'
-            '  "risk_level": "MEDIUM",\n'
-            '  "evidence_quality": "MODERATE",\n'
-            '  "story_consistency": "GOOD",\n'
-            '  "public_signal_strength": "PARTIAL",\n'
-            '  "plagiarism_risk": "LOW",\n'
-            '  "funding_goal_realism": "REASONABLE",\n'
-            '  "red_flags": ["short red flag"],\n'
-            '  "positive_signals": ["short positive signal"],\n'
-            '  "recommended_action": "Plain English action.",\n'
-            '  "reasoning_summary": "Short plain English summary."\n'
+            '  "authenticity_score": 72,\n'
+            '  "evidence_strength": 65,\n'
+            '  "donor_risk_level": "medium",\n'
+            '  "decision": "caution",\n'
+            '  "confidence": 78,\n'
+            '  "recommended_donor_action": "support_with_caution",\n'
+            '  "reasoning": ["specific reason"],\n'
+            '  "risk_flags": ["specific risk flag"],\n'
+            '  "required_improvements": ["specific improvement"]\n'
             "}\n"
         )
 
-    def _normalise_campaign_review(self, parsed: dict) -> dict:
-        verdict = str(parsed.get("verdict", "NEEDS_MORE_EVIDENCE")).upper()
-        if verdict not in CAMPAIGN_VERDICTS:
-            verdict = "NEEDS_MORE_EVIDENCE"
-
-        risk_level = str(parsed.get("risk_level", "MEDIUM")).upper()
-        if risk_level not in RISK_LEVELS:
-            risk_level = "MEDIUM"
-
-        evidence_quality = str(parsed.get("evidence_quality", "NONE")).upper()
-        if evidence_quality not in EVIDENCE_QUALITY:
-            evidence_quality = "NONE"
-
-        story_consistency = str(parsed.get("story_consistency", "WEAK")).upper()
-        if story_consistency not in STORY_CONSISTENCY:
-            story_consistency = "WEAK"
-
-        public_signal_strength = str(parsed.get("public_signal_strength", "NONE")).upper()
-        if public_signal_strength not in PUBLIC_SIGNAL_STRENGTH:
-            public_signal_strength = "NONE"
-
-        plagiarism_risk = str(parsed.get("plagiarism_risk", "LOW")).upper()
-        if plagiarism_risk not in PLAGIARISM_RISK:
-            plagiarism_risk = "LOW"
-
-        funding_goal_realism = str(parsed.get("funding_goal_realism", "QUESTIONABLE")).upper()
-        if funding_goal_realism not in FUNDING_GOAL_REALISM:
-            funding_goal_realism = "QUESTIONABLE"
-
-        return {
-            "verdict": verdict,
-            "authenticity_score": self._clamp_int(parsed.get("authenticity_score", 0), 0, 100),
-            "risk_level": risk_level,
-            "evidence_quality": evidence_quality,
-            "story_consistency": story_consistency,
-            "public_signal_strength": public_signal_strength,
-            "plagiarism_risk": plagiarism_risk,
-            "funding_goal_realism": funding_goal_realism,
-            "red_flags": self._clean_list(parsed.get("red_flags", []), 8, 240),
-            "positive_signals": self._clean_list(parsed.get("positive_signals", []), 8, 240),
-            "recommended_action": str(parsed.get("recommended_action", ""))[:500],
-            "reasoning_summary": str(parsed.get("reasoning_summary", ""))[:1200],
-        }
-
-    def _apply_campaign_review(self, campaign_id: str, review: dict) -> None:
-        raw = self.campaigns.get(campaign_id, "")
-        if not raw:
-            return
-
-        data = self._safe_json_obj(raw)
-
-        verdict = str(review.get("verdict", "NEEDS_MORE_EVIDENCE"))
-
-        status = "PENDING_REVIEW"
-
-        if verdict == "VERIFIED" or verdict == "LIKELY_AUTHENTIC":
-            status = "VERIFIED"
-        elif verdict == "PARTIALLY_SUPPORTED" or verdict == "NEEDS_MORE_EVIDENCE":
-            status = "NEEDS_MORE_EVIDENCE"
-        elif verdict == "RISKY" or verdict == "HIGH_RISK":
-            status = "RISKY"
-        elif verdict == "SUSPICIOUS" or verdict == "LIKELY_FRAUDULENT":
-            status = "SUSPICIOUS"
-        elif verdict == "REJECTED":
-            status = "REJECTED"
-
-        data["status"] = status
-        data["authenticity_score"] = review.get("authenticity_score", 0)
-        data["risk_level"] = review.get("risk_level", "MEDIUM")
-        data["last_reviewed_at"] = self._marker()
-
-        self.campaigns[campaign_id] = json.dumps(data, sort_keys=True)
-
-        creator = str(data.get("creator", "") or "")
-        if creator:
-            rep = self._load_reputation(creator)
-
-            score = int(rep.get("reputation_score", 0))
-            risk = int(rep.get("risk_score", 0))
-
-            if status == "VERIFIED":
-                rep["verified_campaigns"] = int(rep.get("verified_campaigns", 0)) + 1
-                score += 10
-                risk -= 5
-            elif status == "NEEDS_MORE_EVIDENCE":
-                score -= 1
-                risk += 3
-            elif status == "RISKY":
-                rep["risky_campaigns"] = int(rep.get("risky_campaigns", 0)) + 1
-                score -= 5
-                risk += 10
-            elif status == "SUSPICIOUS":
-                rep["risky_campaigns"] = int(rep.get("risky_campaigns", 0)) + 1
-                score -= 10
-                risk += 20
-            elif status == "REJECTED":
-                rep["rejected_campaigns"] = int(rep.get("rejected_campaigns", 0)) + 1
-                score -= 15
-                risk += 25
-
-            rep["reputation_score"] = score
-            rep["risk_score"] = self._clamp_int(risk, 0, 1000)
-
-            self._save_reputation(creator, rep)
-
-    # ---------------------------------------------------------------------
-    # Campaign similarity review
-    # ---------------------------------------------------------------------
+    # ------------------------------- appeals -------------------------------
 
     @gl.public.write
-    def detect_campaign_similarity(self, campaign_id: str, comparison_text: str) -> str:
-        campaign_id = str(campaign_id).strip()
+    def submit_appeal(self, campaign_id: str, appeal_id: str, appeal_reason: str) -> str:
+        self._require_live()
+        campaign = self._load_campaign(str(campaign_id).strip())
+        self._only_creator(campaign)
+        appeal_id = str(appeal_id).strip()
+        if not appeal_id:
+            self._fail("appeal_id required")
+        if self.appeals.get(appeal_id, ""):
+            self._fail("appeal exists")
+        if campaign.get("status") not in ("REVIEWED", "APPEAL_REVIEWED"):
+            self._fail("campaign must be reviewed before appeal")
+        appeal = {
+            "appeal_id": appeal_id,
+            "campaign_id": str(campaign_id).strip(),
+            "creator": self._creator(campaign),
+            "appeal_reason": self._s(appeal_reason, 1500),
+            "status": "APPEALED",
+            "created_at": self._now(),
+        }
+        self.appeals[appeal_id] = self._dumps(appeal)
+        self._append(self.appeals_by_campaign, str(campaign_id).strip(), appeal_id)
+        self.appeal_count = self.appeal_count + u256(1)
+        campaign["status"] = "APPEALED"
+        campaign["last_appeal_id"] = appeal_id
+        self._save_campaign(str(campaign_id).strip(), campaign)
+        rep = self._rep(self._creator(campaign))
+        rep["appeal_count"] = int(rep.get("appeal_count", 0)) + 1
+        self._save_rep(self._creator(campaign), rep)
+        return appeal_id
 
-        campaign_json = self.campaigns.get(campaign_id, "")
-        if not campaign_json:
-            self._fail("unknown campaign")
+    @gl.public.write
+    def commit_appeal_evidence(self, appeal_id: str, evidence_hash: str) -> str:
+        self._require_live()
+        appeal_id = str(appeal_id).strip()
+        appeal = self._obj(self.appeals.get(appeal_id, ""))
+        if not appeal:
+            self._fail("unknown appeal")
+        campaign = self._load_campaign(str(appeal.get("campaign_id", "")))
+        self._only_creator(campaign)
+        if appeal.get("status") != "APPEALED":
+            self._fail("appeal not ready")
+        h = self._norm_hash(evidence_hash)
+        if not h:
+            self._fail("evidence_hash required")
+        appeal["status"] = "APPEAL_EVIDENCE_COMMITTED"
+        appeal["commitment_hash"] = h
+        appeal["committed_at"] = self._now()
+        self.appeals[appeal_id] = self._dumps(appeal)
+        campaign["status"] = "APPEAL_EVIDENCE_COMMITTED"
+        self._save_campaign(str(appeal.get("campaign_id")), campaign)
+        return appeal_id
 
-        comparison_text = str(comparison_text or "")[:5000]
+    @gl.public.write
+    def submit_appeal_evidence(self, appeal_id: str, evidence_json: str) -> str:
+        self._require_live()
+        appeal_id = str(appeal_id).strip()
+        appeal = self._obj(self.appeals.get(appeal_id, ""))
+        if not appeal:
+            self._fail("unknown appeal")
+        campaign = self._load_campaign(str(appeal.get("campaign_id", "")))
+        self._only_creator(campaign)
+        if appeal.get("status") != "APPEALED":
+            self._fail("appeal not ready")
+        evidence = self._obj(evidence_json)
+        if not evidence:
+            self._fail("appeal evidence must be object")
+        self._validate_evidence(evidence)
+        appeal["status"] = "READY_FOR_APPEAL_REVIEW"
+        appeal["evidence_mode"] = "direct_sanitised"
+        appeal["appeal_evidence_json"] = evidence
+        appeal["evidence_submitted_at"] = self._now()
+        self.appeals[appeal_id] = self._dumps(appeal)
+        campaign["status"] = "READY_FOR_APPEAL_REVIEW"
+        self._save_campaign(str(appeal.get("campaign_id")), campaign)
+        return appeal_id
+
+    @gl.public.write
+    def reveal_appeal_evidence(self, appeal_id: str, evidence_json: str, salt: str) -> str:
+        self._require_live()
+        appeal_id = str(appeal_id).strip()
+        appeal = self._obj(self.appeals.get(appeal_id, ""))
+        if not appeal:
+            self._fail("unknown appeal")
+        campaign = self._load_campaign(str(appeal.get("campaign_id", "")))
+        self._only_creator(campaign)
+        if appeal.get("status") != "APPEAL_EVIDENCE_COMMITTED":
+            self._fail("not awaiting appeal reveal")
+        if self._norm_hash(appeal.get("commitment_hash", "")) != self._hash(evidence_json, salt):
+            self._fail("appeal evidence hash mismatch")
+        evidence = self._obj(evidence_json)
+        if not evidence:
+            self._fail("appeal evidence must be object")
+        self._validate_evidence(evidence)
+        appeal["status"] = "READY_FOR_APPEAL_REVIEW"
+        appeal["appeal_evidence_json"] = evidence
+        appeal["salt_hash"] = self._hash("salt", salt)
+        appeal["revealed_at"] = self._now()
+        self.appeals[appeal_id] = self._dumps(appeal)
+        campaign["status"] = "READY_FOR_APPEAL_REVIEW"
+        self._save_campaign(str(appeal.get("campaign_id")), campaign)
+        return appeal_id
+
+    @gl.public.write.payable
+    def trigger_appeal_review(self, appeal_id: str) -> str:
+        self._require_live()
+        appeal_id = str(appeal_id).strip()
+        appeal = self._obj(self.appeals.get(appeal_id, ""))
+        if not appeal:
+            self._fail("unknown appeal")
+        if appeal.get("status") != "READY_FOR_APPEAL_REVIEW":
+            self._fail("appeal not ready")
+        if gl.message.value < self.review_fee_wei:
+            self._fail("appeal review fee too low")
+        self.protocol_fees_wei = self.protocol_fees_wei + gl.message.value
+        campaign_id = str(appeal.get("campaign_id", ""))
+        campaign = self._load_campaign(campaign_id)
+        previous = self._obj(self.verdicts.get(campaign_id, ""))
+        if not previous:
+            self._fail("missing original verdict")
+        appeal["status"] = "APPEAL_UNDER_REVIEW"
+        appeal["review_triggered_by"] = self._sender()
+        appeal["review_triggered_at"] = self._now()
+        self.appeals[appeal_id] = self._dumps(appeal)
+        campaign["status"] = "APPEAL_UNDER_REVIEW"
+        self._save_campaign(campaign_id, campaign)
 
         def leader_review() -> str:
-            prompt = (
-                "You are comparing a crowdfunding campaign to a reference text.\n"
-                "Decide if the campaign appears original, shares a common template, "
-                "or is likely a suspicious duplicate.\n\n"
-                "CAMPAIGN RECORD JSON:\n"
-                + campaign_json
-                + "\n\nCOMPARISON TEXT:\n"
-                + comparison_text
-                + "\n\n"
-                "Return STRICT JSON ONLY:\n"
-                "{\n"
-                '  "similarity_verdict": "ORIGINAL",\n'
-                '  "similarity_score": 0,\n'
-                '  "plagiarism_risk": "LOW",\n'
-                '  "matched_elements": ["short matched element"],\n'
-                '  "explanation": "Short explanation."\n'
-                "}\n"
-            )
+            prompt = self._appeal_prompt(self._dumps(campaign), self._dumps(previous), self._dumps(appeal))
             raw = gl.nondet.exec_prompt(prompt, response_format="json")
-            parsed = self._extract_json(raw)
-            final = self._normalise_similarity_review(parsed)
-            return json.dumps(final, sort_keys=True)
+            return self._dumps(self._normalise_appeal_verdict(self._extract_json(raw), previous))
 
         review_json = gl.eq_principle.prompt_non_comparative(
             leader_review,
-            task="Compare a crowdfunding campaign against reference text for suspicious copying or reused scam-story structure.",
-            criteria=(
-                "The output must be strict JSON. The similarity_verdict must be ORIGINAL, "
-                "SHARED_TEMPLATE, POSSIBLE_DUPLICATE, or CONFIRMED_DUPLICATE. "
-                "The plagiarism_risk must be LOW, MEDIUM, HIGH, or CRITICAL."
-            ),
+            task="Review a crowdfunding campaign appeal using new sanitised evidence and decide whether the prior verdict should change.",
+            criteria="Strict JSON. appeal_decision is uphold/improve/worsen/insufficient_new_evidence. Scores and confidence are 0-100. Reasoning explains material change or no change.",
+        )
+        final = self._normalise_appeal_verdict(self._extract_json(review_json), previous)
+        if len(final.get("reasoning", [])) == 0:
+            self._fail("appeal reasoning required")
+        final["appeal_id"] = appeal_id
+        final["campaign_id"] = campaign_id
+        final["reviewed_at"] = self._now()
+        final["review_fee_paid_wei"] = str(gl.message.value)
+        self.appeal_verdicts[appeal_id] = self._dumps(final)
+        appeal["status"] = "APPEAL_REVIEWED"
+        appeal["appeal_decision"] = final.get("appeal_decision", "insufficient_new_evidence")
+        appeal["reviewed_at"] = self._now()
+        self.appeals[appeal_id] = self._dumps(appeal)
+        campaign["status"] = "APPEAL_REVIEWED"
+        campaign["last_appeal_decision"] = final.get("appeal_decision", "insufficient_new_evidence")
+        campaign["authenticity_score"] = final.get("new_authenticity_score", campaign.get("authenticity_score", 0))
+        campaign["evidence_strength"] = final.get("new_evidence_strength", campaign.get("evidence_strength", 0))
+        campaign["donor_risk_level"] = final.get("new_donor_risk_level", campaign.get("donor_risk_level", "medium"))
+        campaign["recommended_donor_action"] = final.get("new_recommended_donor_action", campaign.get("recommended_donor_action", "wait_for_more_evidence"))
+        self._save_campaign(campaign_id, campaign)
+        self._apply_rep(self._creator(campaign), {
+            "authenticity_score": final.get("new_authenticity_score", 0),
+            "evidence_strength": final.get("new_evidence_strength", 0),
+            "decision": previous.get("decision", "caution"),
+            "donor_risk_level": final.get("new_donor_risk_level", "medium"),
+        })
+        return self._dumps(final)
+
+    def _appeal_prompt(self, campaign_json: str, previous_verdict_json: str, appeal_json: str) -> str:
+        return (
+            "You are reviewing a Judgix campaign appeal. Decide whether new sanitised evidence materially changes the prior verdict.\n\n"
+            "CAMPAIGN JSON:\n" + campaign_json + "\n\nPREVIOUS VERDICT JSON:\n" + previous_verdict_json + "\n\nAPPEAL JSON:\n" + appeal_json +
+            "\n\nReturn STRICT JSON ONLY:\n"
+            "{\n"
+            '  "appeal_decision": "uphold",\n'
+            '  "new_authenticity_score": 72,\n'
+            '  "new_evidence_strength": 65,\n'
+            '  "new_donor_risk_level": "medium",\n'
+            '  "new_recommended_donor_action": "support_with_caution",\n'
+            '  "confidence": 78,\n'
+            '  "reasoning": ["specific reason"],\n'
+            '  "changed_fields": ["field changed"]\n'
+            "}\n"
         )
 
-        parsed = self._extract_json(review_json)
-        final = self._normalise_similarity_review(parsed)
-
-        key = campaign_id + "::similarity::" + str(self.review_count + u256(1))
-        final["campaign_id"] = campaign_id
-        final["review_key"] = key
-        final["reviewed_at"] = self._marker()
-
-        final_json = json.dumps(final, sort_keys=True)
-        self.campaign_similarity_reviews[key] = final_json
-        self.review_count = self.review_count + u256(1)
-
-        return final_json
-
-    def _normalise_similarity_review(self, parsed: dict) -> dict:
-        verdict = str(parsed.get("similarity_verdict", "ORIGINAL")).upper()
-        if verdict not in ("ORIGINAL", "SHARED_TEMPLATE", "POSSIBLE_DUPLICATE", "CONFIRMED_DUPLICATE"):
-            verdict = "ORIGINAL"
-
-        risk = str(parsed.get("plagiarism_risk", "LOW")).upper()
-        if risk not in PLAGIARISM_RISK:
-            risk = "LOW"
-
-        return {
-            "similarity_verdict": verdict,
-            "similarity_score": self._clamp_int(parsed.get("similarity_score", 0), 0, 100),
-            "plagiarism_risk": risk,
-            "matched_elements": self._clean_list(parsed.get("matched_elements", []), 8, 240),
-            "explanation": str(parsed.get("explanation", ""))[:1000],
-        }
-
-    # ---------------------------------------------------------------------
-    # Campaign updates
-    # ---------------------------------------------------------------------
+    # ------------------------------- flags/admin -------------------------------
 
     @gl.public.write
-    def submit_update(self, update_id: str, campaign_id: str, update_json: str) -> str:
-        update_id = str(update_id).strip()
+    def flag_campaign(self, campaign_id: str, flag_json: str) -> str:
+        self._require_live()
         campaign_id = str(campaign_id).strip()
-
-        if not update_id:
-            self._fail("update_id required")
-
-        if not self.campaigns.get(campaign_id, ""):
-            self._fail("unknown campaign")
-
-        if self.campaign_updates.get(update_id, ""):
-            self._fail("update id exists")
-
-        data = self._safe_json_obj(update_json)
+        campaign = self._load_campaign(campaign_id)
+        if campaign.get("status") not in ("REVIEWED", "APPEAL_REVIEWED", "FLAGGED"):
+            self._fail("only reviewed campaigns can be flagged")
+        data = self._obj(flag_json)
         if not data:
-            self._fail("update_json must be a JSON object")
-
-        data["update_id"] = update_id
-        data["campaign_id"] = campaign_id
-        data["created_at"] = self._marker()
-
-        self.campaign_updates[update_id] = json.dumps(data, sort_keys=True)
-        self.update_count = self.update_count + u256(1)
-
-        self._append_index(self.updates_by_campaign, campaign_id, update_id)
-
-        campaign = self._safe_json_obj(self.campaigns.get(campaign_id, "{}"))
-        creator = str(campaign.get("creator", "") or "")
-
-        if creator:
-            rep = self._load_reputation(creator)
-            rep["updates_submitted"] = int(rep.get("updates_submitted", 0)) + 1
-            self._save_reputation(creator, rep)
-
-        return update_id
-
-    @gl.public.write
-    def review_update(self, update_id: str) -> str:
-        update_id = str(update_id).strip()
-
-        update_json = self.campaign_updates.get(update_id, "")
-        if not update_json:
-            self._fail("unknown update")
-
-        update_data = self._safe_json_obj(update_json)
-        campaign_id = str(update_data.get("campaign_id", "") or "")
-        campaign_json = self.campaigns.get(campaign_id, "{}")
-
-        def leader_review() -> str:
-            prompt = (
-                "You are reviewing a crowdfunding campaign update.\n"
-                "Assess whether the update aligns with the original campaign and whether "
-                "the stated fund usage is plausibly supported.\n\n"
-                "ORIGINAL CAMPAIGN JSON:\n"
-                + campaign_json
-                + "\n\nUPDATE JSON:\n"
-                + update_json
-                + "\n\n"
-                "Return STRICT JSON ONLY:\n"
-                "{\n"
-                '  "verdict": "UPDATE_CONFIRMS_PROGRESS",\n'
-                '  "trust_delta": 5,\n'
-                '  "risk_delta": -3,\n'
-                '  "spending_alignment": "MODERATE",\n'
-                '  "evidence_quality": "MODERATE",\n'
-                '  "concerns": ["short concern"],\n'
-                '  "positive_signals": ["short positive signal"],\n'
-                '  "reasoning_summary": "Short summary."\n'
-                "}\n"
-            )
-            raw = gl.nondet.exec_prompt(prompt, response_format="json")
-            parsed = self._extract_json(raw)
-            final = self._normalise_update_review(parsed)
-            return json.dumps(final, sort_keys=True)
-
-        review_json = gl.eq_principle.prompt_non_comparative(
-            leader_review,
-            task="Review whether a crowdfunding update supports campaign progress and responsible fund usage.",
-            criteria=(
-                "The output must be strict JSON. The verdict must use one allowed update verdict. "
-                "trust_delta and risk_delta must be bounded integers. The explanation must be evidence-based."
-            ),
-        )
-
-        parsed = self._extract_json(review_json)
-        final = self._normalise_update_review(parsed)
-
-        final["update_id"] = update_id
-        final["campaign_id"] = campaign_id
-        final["reviewed_at"] = self._marker()
-
-        final_json = json.dumps(final, sort_keys=True)
-
-        self.update_reviews[update_id] = final_json
-
-        self._apply_update_review(campaign_id, final)
-
-        return final_json
-
-    def _normalise_update_review(self, parsed: dict) -> dict:
-        verdict = str(parsed.get("verdict", "UPDATE_NEEDS_MORE_EVIDENCE")).upper()
-        if verdict not in UPDATE_VERDICTS:
-            verdict = "UPDATE_NEEDS_MORE_EVIDENCE"
-
-        spending = str(parsed.get("spending_alignment", "NONE")).upper()
-        if spending not in SPENDING_ALIGNMENT:
-            spending = "NONE"
-
-        evidence = str(parsed.get("evidence_quality", "NONE")).upper()
-        if evidence not in EVIDENCE_QUALITY:
-            evidence = "NONE"
-
-        return {
-            "verdict": verdict,
-            "trust_delta": self._clamp_int(parsed.get("trust_delta", 0), -50, 50),
-            "risk_delta": self._clamp_int(parsed.get("risk_delta", 0), -50, 50),
-            "spending_alignment": spending,
-            "evidence_quality": evidence,
-            "concerns": self._clean_list(parsed.get("concerns", []), 8, 240),
-            "positive_signals": self._clean_list(parsed.get("positive_signals", []), 8, 240),
-            "reasoning_summary": str(parsed.get("reasoning_summary", ""))[:1000],
-        }
-
-    def _apply_update_review(self, campaign_id: str, review: dict) -> None:
-        raw = self.campaigns.get(campaign_id, "")
-        if not raw:
-            return
-
-        campaign = self._safe_json_obj(raw)
-        campaign["last_update_review"] = review.get("verdict", "UPDATE_NEEDS_MORE_EVIDENCE")
-        campaign["last_update_reviewed_at"] = self._marker()
-
-        self.campaigns[campaign_id] = json.dumps(campaign, sort_keys=True)
-
-        creator = str(campaign.get("creator", "") or "")
-        if creator:
-            rep = self._load_reputation(creator)
-            rep["reputation_score"] = int(rep.get("reputation_score", 0)) + int(review.get("trust_delta", 0))
-            rep["risk_score"] = self._clamp_int(
-                int(rep.get("risk_score", 0)) + int(review.get("risk_delta", 0)),
-                0,
-                1000,
-            )
-            self._save_reputation(creator, rep)
-
-    # ---------------------------------------------------------------------
-    # Disputes
-    # ---------------------------------------------------------------------
-
-    @gl.public.write
-    def flag_campaign(self, dispute_id: str, campaign_id: str, dispute_json: str) -> str:
-        dispute_id = str(dispute_id).strip()
-        campaign_id = str(campaign_id).strip()
-
-        if not dispute_id:
-            self._fail("dispute_id required")
-
-        campaign_raw = self.campaigns.get(campaign_id, "")
-        if not campaign_raw:
-            self._fail("unknown campaign")
-
-        if self.disputes.get(dispute_id, ""):
-            self._fail("dispute id exists")
-
-        data = self._safe_json_obj(dispute_json)
-        if not data:
-            self._fail("dispute_json must be a JSON object")
-
-        data["dispute_id"] = dispute_id
+            self._fail("flag_json must be object")
+        flag_id = "FLAG-" + str(self.flag_count + u256(1))
+        data["flag_id"] = flag_id
         data["campaign_id"] = campaign_id
         data["reporter"] = self._sender()
-        data["created_at"] = self._marker()
+        data["created_at"] = self._now()
         data["status"] = "OPEN"
-
-        self.disputes[dispute_id] = json.dumps(data, sort_keys=True)
-        self.dispute_count = self.dispute_count + u256(1)
-
-        self._append_index(self.disputes_by_campaign, campaign_id, dispute_id)
-
-        campaign = self._safe_json_obj(campaign_raw)
-        campaign["status"] = "UNDER_DISPUTE"
-        campaign["last_dispute_id"] = dispute_id
-        self.campaigns[campaign_id] = json.dumps(campaign, sort_keys=True)
-
-        creator = str(campaign.get("creator", "") or "")
-        if creator:
-            rep = self._load_reputation(creator)
-            rep["disputes_received"] = int(rep.get("disputes_received", 0)) + 1
-            self._save_reputation(creator, rep)
-
-        return dispute_id
+        self.flags[flag_id] = self._dumps(data)
+        self.flag_count = self.flag_count + u256(1)
+        self._append(self.flags_by_campaign, campaign_id, flag_id)
+        campaign["status"] = "FLAGGED"
+        campaign["last_flag_id"] = flag_id
+        self._save_campaign(campaign_id, campaign)
+        creator = self._creator(campaign)
+        rep = self._rep(creator)
+        rep["flag_count"] = int(rep.get("flag_count", 0)) + 1
+        self._save_rep(creator, rep)
+        return flag_id
 
     @gl.public.write
-    def resolve_dispute(self, dispute_id: str) -> str:
-        dispute_id = str(dispute_id).strip()
+    def admin_pause(self) -> str:
+        self._only_owner()
+        self.paused = True
+        return "paused"
 
-        dispute_json = self.disputes.get(dispute_id, "")
-        if not dispute_json:
-            self._fail("unknown dispute")
+    @gl.public.write
+    def admin_unpause(self) -> str:
+        self._only_owner()
+        self.paused = False
+        return "unpaused"
 
-        dispute = self._safe_json_obj(dispute_json)
+    @gl.public.write
+    def admin_set_review_fee(self, fee_wei: str) -> str:
+        self._only_owner()
+        try:
+            fee = int(str(fee_wei))
+        except Exception:
+            self._fail("invalid fee")
+        if fee < 0:
+            self._fail("fee cannot be negative")
+        self.review_fee_wei = u256(fee)
+        return str(self.review_fee_wei)
 
-        if str(dispute.get("status", "")) == "RESOLVED":
-            self._fail("dispute already resolved")
+    @gl.public.write
+    def admin_set_keeper(self, keeper: str) -> str:
+        self._only_owner()
+        self.keeper = str(keeper or "").strip()
+        return self.keeper
 
-        campaign_id = str(dispute.get("campaign_id", "") or "")
-        campaign_json = self.campaigns.get(campaign_id, "{}")
+    @gl.public.write
+    def admin_set_schema_version(self, version: str) -> str:
+        self._only_owner()
+        version = str(version or "").strip()
+        if not version:
+            self._fail("schema version required")
+        self.evidence_schema_version = version[:120]
+        return self.evidence_schema_version
 
-        def leader_review() -> str:
-            prompt = (
-                "You are reviewing a dispute filed against a crowdfunding campaign on Judgix.\n"
-                "Assess whether the dispute is supported by evidence and what action, if any, "
-                "should be taken.\n\n"
-                "CAMPAIGN JSON:\n"
-                + campaign_json
-                + "\n\nDISPUTE JSON:\n"
-                + dispute_json
-                + "\n\n"
-                "Return STRICT JSON ONLY:\n"
-                "{\n"
-                '  "verdict": "DISPUTE_PARTIALLY_VALID",\n'
-                '  "campaign_action": "NEEDS_MORE_EVIDENCE",\n'
-                '  "trust_delta": -5,\n'
-                '  "risk_delta": 10,\n'
-                '  "confirmed_issues": ["short confirmed issue"],\n'
-                '  "unconfirmed_issues": ["short unconfirmed issue"],\n'
-                '  "reasoning_summary": "Short summary."\n'
-                "}\n"
-            )
-            raw = gl.nondet.exec_prompt(prompt, response_format="json")
-            parsed = self._extract_json(raw)
-            final = self._normalise_dispute_review(parsed)
-            return json.dumps(final, sort_keys=True)
+    @gl.public.write
+    def admin_set_hidden(self, campaign_id: str, hidden: bool) -> str:
+        self._only_owner()
+        campaign_id = str(campaign_id).strip()
+        campaign = self._load_campaign(campaign_id)
+        self.hidden_campaigns[campaign_id] = "true" if hidden else ""
+        campaign["hidden"] = bool(hidden)
+        self._save_campaign(campaign_id, campaign)
+        return campaign_id
 
-        review_json = gl.eq_principle.prompt_non_comparative(
-            leader_review,
-            task="Resolve a crowdfunding campaign dispute based on campaign evidence and dispute evidence.",
-            criteria=(
-                "The output must be strict JSON. The verdict must use one allowed dispute verdict. "
-                "The campaign_action must be one allowed action. The result must not make legal conclusions."
-            ),
-        )
+    @gl.public.write
+    def admin_mark_spam(self, campaign_id: str, reason: str) -> str:
+        self._only_owner()
+        campaign_id = str(campaign_id).strip()
+        campaign = self._load_campaign(campaign_id)
+        campaign["admin_spam_flag"] = True
+        campaign["admin_spam_reason"] = self._s(reason, 500)
+        campaign["hidden"] = True
+        campaign["admin_flagged_at"] = self._now()
+        self.hidden_campaigns[campaign_id] = "true"
+        self._save_campaign(campaign_id, campaign)
+        return campaign_id
 
-        parsed = self._extract_json(review_json)
-        final = self._normalise_dispute_review(parsed)
+    @gl.public.write
+    def admin_withdraw_protocol_fees(self, recipient: str, amount_wei: str) -> str:
+        self._only_owner()
+        try:
+            amount = int(str(amount_wei))
+        except Exception:
+            self._fail("invalid amount")
+        if amount <= 0:
+            self._fail("amount must be positive")
+        if u256(amount) > self.protocol_fees_wei:
+            self._fail("amount exceeds protocol fees")
+        self.protocol_fees_wei = self.protocol_fees_wei - u256(amount)
+        _Recipient(Address(str(recipient))).emit_transfer(value=u256(amount))
+        return str(amount)
 
-        final["dispute_id"] = dispute_id
-        final["campaign_id"] = campaign_id
-        final["reviewed_at"] = self._marker()
-
-        final_json = json.dumps(final, sort_keys=True)
-        self.dispute_reviews[dispute_id] = final_json
-
-        dispute["status"] = "RESOLVED"
-        dispute["verdict"] = final.get("verdict", "INSUFFICIENT_EVIDENCE")
-        self.disputes[dispute_id] = json.dumps(dispute, sort_keys=True)
-
-        self._apply_dispute_review(campaign_id, final)
-
-        return final_json
-
-    def _normalise_dispute_review(self, parsed: dict) -> dict:
-        verdict = str(parsed.get("verdict", "INSUFFICIENT_EVIDENCE")).upper()
-        if verdict not in DISPUTE_VERDICTS:
-            verdict = "INSUFFICIENT_EVIDENCE"
-
-        action = str(parsed.get("campaign_action", "NO_ACTION")).upper()
-        if action not in CAMPAIGN_ACTIONS:
-            action = "NO_ACTION"
-
-        return {
-            "verdict": verdict,
-            "campaign_action": action,
-            "trust_delta": self._clamp_int(parsed.get("trust_delta", 0), -100, 50),
-            "risk_delta": self._clamp_int(parsed.get("risk_delta", 0), -50, 100),
-            "confirmed_issues": self._clean_list(parsed.get("confirmed_issues", []), 8, 240),
-            "unconfirmed_issues": self._clean_list(parsed.get("unconfirmed_issues", []), 8, 240),
-            "reasoning_summary": str(parsed.get("reasoning_summary", ""))[:1000],
-        }
-
-    def _apply_dispute_review(self, campaign_id: str, review: dict) -> None:
-        raw = self.campaigns.get(campaign_id, "")
-        if not raw:
-            return
-
-        campaign = self._safe_json_obj(raw)
-
-        action = str(review.get("campaign_action", "NO_ACTION"))
-
-        if action == "NEEDS_MORE_EVIDENCE":
-            campaign["status"] = "NEEDS_MORE_EVIDENCE"
-        elif action == "RISKY":
-            campaign["status"] = "RISKY"
-        elif action == "SUSPICIOUS":
-            campaign["status"] = "SUSPICIOUS"
-        elif action == "SUSPENDED":
-            campaign["status"] = "SUSPENDED"
-        elif action == "REJECTED":
-            campaign["status"] = "REJECTED"
-        elif action == "NO_ACTION":
-            if campaign.get("status") == "UNDER_DISPUTE":
-                campaign["status"] = "RESOLVED_NO_ACTION"
-
-        campaign["last_dispute_action"] = action
-        campaign["last_dispute_reviewed_at"] = self._marker()
-
-        self.campaigns[campaign_id] = json.dumps(campaign, sort_keys=True)
-
-        creator = str(campaign.get("creator", "") or "")
-        if creator:
-            rep = self._load_reputation(creator)
-
-            rep["reputation_score"] = int(rep.get("reputation_score", 0)) + int(review.get("trust_delta", 0))
-            rep["risk_score"] = self._clamp_int(
-                int(rep.get("risk_score", 0)) + int(review.get("risk_delta", 0)),
-                0,
-                1000,
-            )
-
-            if review.get("verdict") == "DISPUTE_CONFIRMED":
-                rep["disputes_confirmed"] = int(rep.get("disputes_confirmed", 0)) + 1
-
-            self._save_reputation(creator, rep)
-
-    # ---------------------------------------------------------------------
-    # Views
-    # ---------------------------------------------------------------------
+    # -------------------------------- views --------------------------------
 
     @gl.public.view
     def get_campaign(self, campaign_id: str) -> str:
         return self.campaigns.get(str(campaign_id), "")
 
     @gl.public.view
-    def get_campaign_review(self, campaign_id: str) -> str:
-        return self.campaign_reviews.get(str(campaign_id), "")
+    def get_evidence(self, campaign_id: str) -> str:
+        return self.evidence_records.get(str(campaign_id), "")
 
     @gl.public.view
-    def get_similarity_review(self, review_key: str) -> str:
-        return self.campaign_similarity_reviews.get(str(review_key), "")
+    def get_verdict(self, campaign_id: str) -> str:
+        return self.verdicts.get(str(campaign_id), "")
 
     @gl.public.view
-    def get_update(self, update_id: str) -> str:
-        return self.campaign_updates.get(str(update_id), "")
+    def get_appeal(self, appeal_id: str) -> str:
+        return self.appeals.get(str(appeal_id), "")
 
     @gl.public.view
-    def get_update_review(self, update_id: str) -> str:
-        return self.update_reviews.get(str(update_id), "")
+    def get_appeal_verdict(self, appeal_id: str) -> str:
+        return self.appeal_verdicts.get(str(appeal_id), "")
 
     @gl.public.view
-    def get_dispute(self, dispute_id: str) -> str:
-        return self.disputes.get(str(dispute_id), "")
+    def get_flag(self, flag_id: str) -> str:
+        return self.flags.get(str(flag_id), "")
 
     @gl.public.view
-    def get_dispute_review(self, dispute_id: str) -> str:
-        return self.dispute_reviews.get(str(dispute_id), "")
+    def get_flags_for_campaign(self, campaign_id: str) -> str:
+        return self.flags_by_campaign.get(str(campaign_id), "[]")
+
+    @gl.public.view
+    def get_appeals_for_campaign(self, campaign_id: str) -> str:
+        return self.appeals_by_campaign.get(str(campaign_id), "[]")
 
     @gl.public.view
     def get_creator_campaigns(self, creator: str) -> str:
@@ -994,24 +828,11 @@ class Judgix(gl.Contract):
         return self.creator_reputation.get(str(creator), "{}")
 
     @gl.public.view
-    def get_protocol_stats(self) -> str:
-        return json.dumps(
-            {
-                "campaigns": str(self.campaign_count),
-                "reviews": str(self.review_count),
-                "updates": str(self.update_count),
-                "disputes": str(self.dispute_count),
-            },
-            sort_keys=True,
-        )
-
-    # ---------------------------------------------------------------------
-    # Global / per-campaign listing views
-    # ---------------------------------------------------------------------
+    def get_reviewed_campaigns(self) -> str:
+        return self.reviewed_index.get("reviewed", "[]")
 
     @gl.public.view
     def list_campaigns(self, offset: str, limit: str) -> str:
-        """Return a JSON list of campaign_ids in insertion order, paginated."""
         try:
             start = max(0, int(offset))
         except Exception:
@@ -1024,16 +845,32 @@ class Judgix(gl.Contract):
             n = 100
         if n > 500:
             n = 500
-
-        all_ids = self._safe_json_list(self.campaign_index.get("all", "[]"))
-        return json.dumps(all_ids[start:start + n])
-
-    @gl.public.view
-    def get_updates_for_campaign(self, campaign_id: str) -> str:
-        """Return a JSON list of update_ids for a campaign."""
-        return self.updates_by_campaign.get(str(campaign_id), "[]")
+        items = self._list(self.campaign_index.get("all", "[]"))
+        return json.dumps(items[start:start + n], separators=(",", ":"))
 
     @gl.public.view
-    def get_disputes_for_campaign(self, campaign_id: str) -> str:
-        """Return a JSON list of dispute_ids for a campaign."""
-        return self.disputes_by_campaign.get(str(campaign_id), "[]")
+    def get_config(self) -> str:
+        return self._dumps({
+            "owner": str(self.owner),
+            "paused": self.paused,
+            "keeper": self.keeper,
+            "evidence_schema_version": self.evidence_schema_version,
+            "review_fee_wei": str(self.review_fee_wei),
+            "review_fee_gen_label": "0.01 GEN default" if int(self.review_fee_wei) == DEFAULT_REVIEW_FEE_WEI else "custom",
+            "protocol_fees_wei": str(self.protocol_fees_wei),
+        })
+
+    @gl.public.view
+    def get_protocol_stats(self) -> str:
+        return self._dumps({
+            "campaign_count": str(self.campaign_count),
+            "review_count": str(self.review_count),
+            "appeal_count": str(self.appeal_count),
+            "flag_count": str(self.flag_count),
+            "review_fee_wei": str(self.review_fee_wei),
+            "paused": self.paused,
+        })
+
+    @gl.public.view
+    def is_hidden(self, campaign_id: str) -> str:
+        return self.hidden_campaigns.get(str(campaign_id), "")

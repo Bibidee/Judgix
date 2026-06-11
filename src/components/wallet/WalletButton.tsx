@@ -3,14 +3,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useWallet } from "@/lib/wallet/WalletProvider";
 import { shortAddress } from "@/lib/scoring";
-import { JUDGIX_RPC_URL, STUDIO_NETWORK } from "@/lib/genlayer/sdk";
+import { STUDIO_NETWORK } from "@/lib/genlayer/sdk";
 
 export function WalletButton() {
-  const { connected, address, privateKey, connect, disconnect, isOwner, importKey, rotateKey, ownerAddress } = useWallet();
+  const { connected, authenticated, ready, address, connect, disconnect, exportKey, isOwner, ownerAddress } = useWallet();
   const [open, setOpen] = useState(false);
-  const [showKey, setShowKey] = useState(false);
-  const [pkInput, setPkInput] = useState("");
-  const [copied, setCopied] = useState<"" | "address" | "key">("");
+  const [copied, setCopied] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -21,29 +19,27 @@ export function WalletButton() {
     return () => document.removeEventListener("mousedown", onClickOutside);
   }, [open]);
 
-  async function copy(value: string, kind: "address" | "key") {
+  async function copyAddress() {
+    if (!address) return;
     try {
-      await navigator.clipboard.writeText(value);
-      setCopied(kind);
-      setTimeout(() => setCopied(""), 1200);
+      await navigator.clipboard.writeText(address);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
     } catch {}
   }
 
-  function downloadBackup() {
-    if (!privateKey || !address) return;
-    const payload = { address, privateKey, contract: "0xE0e599492dF311a9152b87F27Cf6C179fC72cC6B", endpoint: JUDGIX_RPC_URL, createdAt: new Date().toISOString() };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = `judgix-wallet-${address.slice(0, 8)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+  if (!ready) {
+    return (
+      <button disabled className="bg-cloud/10 text-cloud/60 border border-cyan/20 px-3 py-1.5 rounded-md text-sm">
+        Loading…
+      </button>
+    );
   }
 
-  if (!connected) {
+  if (!authenticated || !connected) {
     return (
       <button onClick={connect} className="bg-cyan text-plum px-3 py-1.5 rounded-md text-sm font-medium">
-        Connect wallet
+        Enter Judgix
       </button>
     );
   }
@@ -56,101 +52,66 @@ export function WalletButton() {
       >
         <span className="w-2 h-2 rounded-full bg-mint" />
         <span className="font-mono">{shortAddress(address || "")}</span>
-        {isOwner && <span className="case-stamp text-cyan">moderator</span>}
+        {isOwner && <span className="case-stamp text-cyan">admin</span>}
       </button>
 
       {open && (
         <div className="absolute right-0 top-full mt-2 w-[360px] paper-card p-0 z-50 text-deeptext overflow-hidden">
-          {/* Header */}
           <div className="bg-plum text-cloud px-4 py-3">
-            <div className="case-stamp text-cyan">Embedded wallet</div>
+            <div className="case-stamp text-cyan">Judgix wallet</div>
             <div className="mt-1 flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-mint" />
               <span className="font-mono text-sm">{shortAddress(address || "")}</span>
-              {isOwner && <span className="case-stamp bg-cyan text-plum px-1.5 py-0.5 rounded">MOD</span>}
+              {isOwner && <span className="case-stamp bg-cyan text-plum px-1.5 py-0.5 rounded">ADMIN</span>}
             </div>
+            <div className="case-stamp text-cyan/70 mt-1">Privy embedded · {STUDIO_NETWORK.name}</div>
           </div>
 
-          {/* Body */}
           <div className="p-4 space-y-4">
-            {/* Address */}
             <div>
               <div className="flex items-center justify-between">
                 <span className="case-stamp text-slate">Address</span>
-                <button onClick={() => copy(address || "", "address")} className="case-stamp text-evidence hover:underline">
-                  {copied === "address" ? "Copied" : "Copy"}
+                <button onClick={copyAddress} className="case-stamp text-evidence hover:underline">
+                  {copied ? "Copied" : "Copy"}
                 </button>
               </div>
               <div className="mt-1 font-mono text-xs break-all border border-mist rounded px-2 py-1.5 bg-cloud">{address}</div>
             </div>
 
-            {/* Private key */}
-            <div>
-              <div className="flex items-center justify-between">
-                <span className="case-stamp text-slate">Private key</span>
-                <div className="flex gap-3">
-                  <button onClick={() => setShowKey(s => !s)} className="case-stamp text-evidence hover:underline">
-                    {showKey ? "Hide" : "Reveal"}
-                  </button>
-                  <button onClick={() => privateKey && copy(privateKey, "key")} className="case-stamp text-evidence hover:underline">
-                    {copied === "key" ? "Copied" : "Copy"}
-                  </button>
-                </div>
-              </div>
-              <div className="mt-1 font-mono text-xs break-all border border-mist rounded px-2 py-1.5 bg-cloud min-h-[2rem]">
-                {showKey ? privateKey : (privateKey ? "•".repeat(64) + " (hidden)" : "—")}
-              </div>
-              <p className="case-stamp text-raspberry mt-1">Never share your key. Anyone with it controls this wallet.</p>
-            </div>
-
-            {/* Network / contract info */}
             <div className="grid grid-cols-2 gap-2 text-xs">
               <div className="border border-mist rounded p-2">
                 <div className="case-stamp text-slate">Network</div>
-                <div className="font-mono truncate" title={STUDIO_NETWORK.endpoint}>
-                  {STUDIO_NETWORK.name}
-                </div>
-                <div className="case-stamp text-slate mt-0.5">chain id {STUDIO_NETWORK.id} · {STUDIO_NETWORK.symbol}</div>
+                <div className="font-mono truncate">{STUDIO_NETWORK.name}</div>
+                <div className="case-stamp text-slate mt-0.5">chain {STUDIO_NETWORK.id} · {STUDIO_NETWORK.symbol}</div>
               </div>
               <div className="border border-mist rounded p-2">
                 <div className="case-stamp text-slate">Role</div>
-                <div className="font-mono">{isOwner ? "Moderator" : "Public"}</div>
+                <div className="font-mono">{isOwner ? "Admin" : "Public"}</div>
               </div>
             </div>
 
-
             {ownerAddress && (
               <div className="border border-mist rounded p-2 text-xs">
-                <div className="case-stamp text-slate">Contract owner</div>
+                <div className="case-stamp text-slate">Protocol admin</div>
                 <div className="font-mono break-all">{ownerAddress}</div>
               </div>
             )}
 
-            {/* Actions */}
-            <div className="grid grid-cols-2 gap-2">
-              <button onClick={downloadBackup} className="border border-mist text-sm py-1.5 rounded hover:border-evidence">Download backup</button>
-              <button onClick={() => { if (confirm("Generate a new wallet? The current key will be replaced. Download a backup first.")) rotateKey(); }} className="border border-mist text-sm py-1.5 rounded hover:border-evidence">Rotate key</button>
-            </div>
-
-            {/* Import */}
             <details className="border border-mist rounded">
-              <summary className="case-stamp text-slate px-2 py-1.5 cursor-pointer">Import private key</summary>
-              <div className="p-2 border-t border-mist">
-                <input
-                  value={pkInput}
-                  onChange={e => setPkInput(e.target.value)}
-                  placeholder="0x… (64 hex chars)"
-                  className="w-full font-mono text-xs border border-mist rounded px-2 py-1.5"
-                />
-                <button
-                  onClick={() => { if (pkInput.length === 66 && pkInput.startsWith("0x")) { importKey(pkInput as `0x${string}`); setPkInput(""); } }}
-                  className="mt-2 w-full bg-plum text-cloud text-sm py-1.5 rounded"
-                >Use this key</button>
+              <summary className="case-stamp text-slate px-3 py-2 cursor-pointer">Advanced · export key</summary>
+              <div className="p-3 border-t border-mist text-xs space-y-2">
+                <p className="text-slate">
+                  Privy will display your embedded wallet's private key in a secure modal. Never paste it in a chat,
+                  email, or unfamiliar app.
+                </p>
+                <button onClick={exportKey} className="w-full bg-plum text-cloud py-1.5 rounded">
+                  Open secure export
+                </button>
               </div>
             </details>
 
             <button onClick={() => { disconnect(); setOpen(false); }} className="w-full border border-raspberry text-raspberry text-sm py-1.5 rounded hover:bg-raspberry hover:text-cloud transition">
-              Disconnect
+              Sign out
             </button>
           </div>
         </div>

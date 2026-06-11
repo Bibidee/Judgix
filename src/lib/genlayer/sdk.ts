@@ -47,7 +47,7 @@ export const STUDIO_NETWORK = {
 
 export const JUDGIX_CONTRACT_ADDRESS =
   (process.env.NEXT_PUBLIC_JUDGIX_ADDRESS ||
-    "0xE0e599492dF311a9152b87F27Cf6C179fC72cC6B") as Address;
+    "0x528d6fD06122b8ce461c33B1c3Fb7062f5eae7ED") as Address;
 
 export const JUDGIX_RPC_URL =
   process.env.NEXT_PUBLIC_GENLAYER_RPC || "/api/genlayer";

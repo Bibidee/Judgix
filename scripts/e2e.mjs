@@ -9,7 +9,7 @@ import { createClient, createAccount, generatePrivateKey } from "genlayer-js";
 import { localnet } from "genlayer-js/chains";
 
 const ENDPOINT = process.env.JUDGIX_RPC || "http://localhost:3000/api/genlayer";
-const CONTRACT = process.env.JUDGIX_ADDRESS || "0xE0e599492dF311a9152b87F27Cf6C179fC72cC6B";
+const CONTRACT = process.env.JUDGIX_ADDRESS || "0x528d6fD06122b8ce461c33B1c3Fb7062f5eae7ED";
 
 const STUDIO_CHAIN = {
   ...localnet,

@@ -9,23 +9,24 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@hookform/resolvers": "^3.9.0",
+    "@privy-io/react-auth": "^3.29.2",
+    "genlayer-js": "^0.10.0",
+    "idb": "^8.0.0",
     "next": "^15.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-hook-form": "^7.53.0",
     "zod": "^3.23.8",
-    "zustand": "^4.5.5",
-    "@hookform/resolvers": "^3.9.0",
-    "genlayer-js": "^0.10.0",
-    "idb": "^8.0.0"
+    "zustand": "^4.5.5"
   },
   "devDependencies": {
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
-    "typescript": "^5",
-    "tailwindcss": "^3.4.10",
+    "autoprefixer": "^10",
     "postcss": "^8",
-    "autoprefixer": "^10"
+    "tailwindcss": "^3.4.10",
+    "typescript": "^5"
   }
 }

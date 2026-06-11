@@ -2,7 +2,7 @@ import { createClient, createAccount, generatePrivateKey } from "genlayer-js";
 import { localnet } from "genlayer-js/chains";
 
 const ENDPOINT = "https://studio.genlayer.com/api";
-const CONTRACT = "0xE0e599492dF311a9152b87F27Cf6C179fC72cC6B";
+const CONTRACT = "0x528d6fD06122b8ce461c33B1c3Fb7062f5eae7ED";
 const STUDIO = { ...localnet, id: 6199, name: "GenLayer Studio Network",
   rpcUrls: { default: { http: [ENDPOINT] } },
   nativeCurrency: { name: "GEN", symbol: "GEN", decimals: 18 } };

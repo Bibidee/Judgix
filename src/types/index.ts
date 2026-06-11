@@ -1,119 +1,138 @@
+// Judgix V1 type system — sanitised-evidence, GenLayer-judged trust verdicts.
+// Everything below mirrors the on-chain JSON shape from contracts/judgix.py.
+
 export type CampaignStatus =
-  | "DRAFT" | "PENDING_REVIEW" | "VERIFIED" | "NEEDS_MORE_EVIDENCE"
-  | "RISKY" | "SUSPICIOUS" | "REJECTED" | "UNDER_DISPUTE"
-  | "SUSPENDED" | "RESOLVED" | "ARCHIVED";
+  | "CREATED"
+  | "EVIDENCE_COMMITTED"
+  | "EVIDENCE_REVEALED"
+  | "READY_FOR_REVIEW"
+  | "UNDER_REVIEW"
+  | "REVIEWED"
+  | "FLAGGED"
+  | "APPEALED"
+  | "APPEAL_EVIDENCE_COMMITTED"
+  | "APPEAL_EVIDENCE_REVEALED"
+  | "READY_FOR_APPEAL_REVIEW"
+  | "APPEAL_REVIEWED"
+  | "CANCELLED"
+  | "HIDDEN"
+  | "SPAM";
 
-export type EvidenceType =
-  | "MEDICAL_DOCUMENT" | "INVOICE" | "SCHOOL_DOCUMENT" | "POLICE_REPORT"
-  | "NEWS_ARTICLE" | "SOCIAL_POST" | "REGISTRATION" | "IMAGE" | "VIDEO"
-  | "RECEIPT" | "PUBLIC_STATEMENT" | "OTHER";
+export type DonorRiskLevel = "low" | "medium" | "high" | "critical";
+export type Decision = "verified" | "caution" | "high_risk" | "reject";
+export type DonorAction = "support" | "support_with_caution" | "wait_for_more_evidence" | "avoid";
+export type AppealDecision = "uphold" | "improve" | "worsen" | "insufficient_new_evidence";
 
-export type EvidenceItem = {
-  id: string;
-  type: EvidenceType;
-  title: string;
-  description: string;
-  uri: string;
-  hash?: string;
-  date?: string;
-  sourceName?: string;
-};
-
-export type PublicSignal = {
-  platform: "website" | "x" | "instagram" | "facebook" | "linkedin" | "news" | "crowdfunding" | "registration";
-  url: string;
-  label?: string;
-};
-
-export type RiskLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+export type UseOfFundsItem = { item: string; amount: number };
 
 export type Campaign = {
   id: string;
   creator: string;
   title: string;
   category: string;
-  country: string;
-  fundingGoal: string;
-  currency: string;
-  beneficiary: string;
-  walletAddress: string;
+  fundingGoal: number;
   story: string;
-  useOfFunds: string;
-  problemStatement: string;
-  whoBenefits: string;
-  timelineOfEvents: string;
-  evidence: EvidenceItem[];
-  publicSignals: PublicSignal[];
+  beneficiarySummary: string;
+  regionSummary: string;
+  useOfFunds: UseOfFundsItem[];
+  timeline: string;
+  publicProofLinks: string[];
+  riskDisclosure: string;
   status: CampaignStatus;
-  deadline?: string;
-  createdAt: number;
-  updatedAt: number;
+  schemaVersion?: string;
+  createdAt?: string;
+  // Cached verdict snapshot (the contract stores final review separately, but
+  // some views echo a small summary).
+  authenticityScore?: number;
+  donorRiskLevel?: DonorRiskLevel;
+  decision?: Decision;
 };
 
-export type CampaignReview = {
+export type SanitisedEvidence = {
+  campaignId: string;
+  evidenceSummary: string;
+  proofType: string;
+  documentHash?: string;
+  thirdPartyVerification?: string;
+  socialProofSummary?: string;
+  beneficiaryRelationship?: string;
+  redactionStatement: string;
+  schemaVersion?: string;
+  revealedAt?: string;
+};
+
+export type Verdict = {
+  campaignId: string;
+  authenticityScore: number;       // 0–100
+  evidenceStrength: number;        // 0–100
+  donorRiskLevel: DonorRiskLevel;
+  decision: Decision;
+  confidence: number;              // 0–100
+  recommendedDonorAction: DonorAction;
+  reasoning: string[];
+  riskFlags: string[];
+  requiredImprovements: string[];
+  reviewedAt?: string;
+  reviewer?: string;
+};
+
+export type Appeal = {
   id: string;
   campaignId: string;
-  verdict: string;
-  authenticityScore: number;
-  riskLevel: RiskLevel;
-  evidenceQuality: string;
-  storyConsistency: string;
-  publicSignalStrength: string;
-  plagiarismRisk: string;
-  fundingGoalRealism: string;
-  redFlags: string[];
-  positiveSignals: string[];
-  recommendedAction: string;
-  reasoningSummary: string;
-  createdAt: number;
-  reviewTxHash?: string;
-  confidence?: string;
+  creator: string;
+  reason: string;
+  status: CampaignStatus;
+  createdAt?: string;
 };
 
-export type CampaignUpdate = {
-  id: string;
-  campaignId: string;
-  title: string;
-  body: string;
-  amountSpent: string;
-  evidenceLinks: string[];
-  fundUsageExplanation: string;
-  nextSteps: string;
-  createdAt: number;
-  review?: UpdateReview;
+export type AppealVerdict = {
+  appealId: string;
+  appealDecision: AppealDecision;
+  newAuthenticityScore: number;
+  newEvidenceStrength: number;
+  newDonorRiskLevel: DonorRiskLevel;
+  newRecommendedDonorAction: DonorAction;
+  confidence: number;
+  reasoning: string[];
+  changedFields: string[];
+  reviewedAt?: string;
 };
 
-export type UpdateReview = {
-  verdict: string;
-  trustDelta: number;
-  riskDelta: number;
-  spendingAlignment: string;
-  evidenceQuality: string;
-  concerns: string[];
-  positiveSignals: string[];
-  reasoningSummary: string;
-  createdAt: number;
-};
-
-export type Dispute = {
+export type Flag = {
   id: string;
   campaignId: string;
   reporter: string;
   reason: string;
-  description: string;
-  evidence: string;
-  severity: "LOW" | "MEDIUM" | "HIGH";
-  createdAt: number;
-  review?: DisputeReview;
+  createdAt?: string;
 };
 
-export type DisputeReview = {
-  verdict: string;
-  campaignAction: string;
-  trustDelta: number;
-  riskDelta: number;
-  confirmedIssues: string[];
-  unconfirmedIssues: string[];
-  reasoningSummary: string;
-  createdAt: number;
+export type CreatorReputation = {
+  creator: string;
+  totalCampaigns: number;
+  reviewedCampaigns: number;
+  verifiedCount: number;
+  cautionCount: number;
+  highRiskCount: number;
+  rejectedCount: number;
+  averageAuthenticityScore: number;
+  averageEvidenceStrength: number;
+  lastDecision: string;
+  lastDonorRiskLevel: string;
+  appealCount: number;
+  flagCount: number;
+};
+
+export type ProtocolStats = {
+  campaigns: number;
+  reviews: number;
+  appeals: number;
+  flags: number;
+};
+
+export type ProtocolConfig = {
+  paused: boolean;
+  keeper: string;
+  evidenceSchemaVersion: string;
+  reviewFeeWei: string;
+  protocolFeesWei: string;
 };
