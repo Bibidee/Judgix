@@ -1,7 +1,11 @@
+"use client";
+
 import Link from "next/link";
 import { WalletButton } from "@/components/wallet/WalletButton";
+import { useWallet } from "@/lib/wallet/WalletProvider";
 
 export function TopNav() {
+  const { isOwner } = useWallet();
   return (
     <header className="border-b border-mist bg-plum text-cloud">
       <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
@@ -14,7 +18,12 @@ export function TopNav() {
         </Link>
         <nav className="hidden md:flex items-center gap-7 text-sm">
           <Link href="/campaigns" className="hover:text-cyan">Case Files</Link>
-          <Link href="/review" className="hover:text-cyan">Review Docket</Link>
+          {isOwner && (
+            <Link href="/review" className="hover:text-cyan flex items-center gap-2">
+              Review Docket
+              <span className="case-stamp bg-cyan text-plum px-1.5 py-0.5 rounded">MOD</span>
+            </Link>
+          )}
           <Link href="/submit" className="hover:text-cyan">Open Case</Link>
         </nav>
         <WalletButton />

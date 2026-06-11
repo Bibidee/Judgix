@@ -86,24 +86,48 @@ export default function ReviewDashboard() {
 
   const rows = rowsFor(tab);
 
+  // Hard gate: the review docket is a moderator workspace. Non-owners must
+  // not see the pending / flagged / dispute queues at all.
+  if (!connected) {
+    return (
+      <div className="max-w-3xl mx-auto px-6 py-20 text-center">
+        <div className="case-stamp text-slate">Restricted area</div>
+        <h1 className="font-serif-display text-4xl mt-2">Review Docket</h1>
+        <p className="text-deeptext/70 mt-3 max-w-xl mx-auto">
+          The review docket is restricted to the contract owner. Connect a wallet to continue.
+        </p>
+        <button onClick={connect} className="mt-6 bg-coral text-cloud px-5 py-2.5 rounded-md font-medium">
+          Connect wallet
+        </button>
+      </div>
+    );
+  }
+
+  if (!isOwner) {
+    return (
+      <div className="max-w-3xl mx-auto px-6 py-20 text-center">
+        <div className="case-stamp text-raspberry">Access denied</div>
+        <h1 className="font-serif-display text-4xl mt-2">Moderator only</h1>
+        <p className="text-deeptext/70 mt-3 max-w-xl mx-auto">
+          This workspace is restricted to the Judgix contract owner. The connected wallet does not
+          have moderator privileges, so the pending, flagged, high-risk and dispute queues are hidden.
+        </p>
+        <div className="mt-6 inline-block paper-card p-4 text-left">
+          <div className="case-stamp text-slate">Looking for something else?</div>
+          <ul className="mt-2 text-sm space-y-1">
+            <li>· <Link href="/campaigns" className="text-evidence hover:underline">Browse case files</Link></li>
+            <li>· <Link href="/submit" className="text-evidence hover:underline">Open a new case file</Link></li>
+          </ul>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-7xl mx-auto px-6 py-10">
-      <div className="case-stamp text-slate">Reviewer workspace · {loading ? "Loading from contract…" : "On-chain"}</div>
+      <div className="case-stamp text-slate">Moderator workspace · {loading ? "Loading from contract…" : "On-chain"}</div>
       <h1 className="font-serif-display text-4xl mt-1">Review Docket</h1>
       <p className="text-deeptext/70 mt-2">Trigger consensus review, monitor risk, and clear the dispute queue.</p>
-
-      {!connected && (
-        <div className="mt-6 paper-card p-4 flex items-center justify-between border-coral/40">
-          <p className="text-sm">Connect a wallet to use the review docket. Only the contract owner can trigger review transactions.</p>
-          <button onClick={connect} className="bg-coral text-cloud px-4 py-2 rounded-md">Connect</button>
-        </div>
-      )}
-      {connected && !isOwner && (
-        <div className="mt-6 paper-card p-4 border-apricot/60">
-          <div className="case-stamp text-apricot-dark">Read-only access</div>
-          <p className="text-sm mt-1">Your wallet is connected but is not the contract owner/moderator. Review triggers are disabled.</p>
-        </div>
-      )}
 
       <div className="mt-6 flex flex-wrap gap-2">
         {TABS.map(t => (
