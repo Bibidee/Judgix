@@ -39,7 +39,27 @@ async function readView(functionName: string, args: any[] = []): Promise<string>
   return typeof res === "string" ? res : (res == null ? "" : JSON.stringify(res));
 }
 
-type WriteOpts = { onHash?: (hash: string) => void; value?: bigint };
+type WriteOpts = { onHash?: (hash: string) => void; value?: bigint; broadcastTimeoutMs?: number };
+
+class TxTimeoutError extends Error {
+  constructor(public functionName: string, public timeoutMs: number) {
+    super(
+      `[Judgix] ${functionName} did not return a tx hash within ${timeoutMs}ms. ` +
+      `The wallet never produced a signed transaction. Most likely the embedded ` +
+      `wallet provider does not support eth_signTransaction. Check the browser ` +
+      `console for "[Judgix] write" logs and inspect the connected signer.`
+    );
+    this.name = "TxTimeoutError";
+  }
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number, onTimeout: () => Error): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(onTimeout()), ms);
+    p.then(v => { clearTimeout(t); resolve(v); },
+           e => { clearTimeout(t); reject(e); });
+  });
+}
 
 async function writeMethod(
   account: Account,
@@ -47,19 +67,55 @@ async function writeMethod(
   args: any[] = [],
   opts: WriteOpts = {},
 ): Promise<{ hash: string; receipt: any | null }> {
+  const debug = (...parts: any[]) =>
+    console.log("[Judgix] write", functionName, ...parts);
+
+  if (!account) {
+    throw new Error(`[Judgix] ${functionName} aborted — no signer (account is null). The wallet is not connected or the Privy embedded wallet has not finished provisioning.`);
+  }
+  if (!JUDGIX_CONTRACT_ADDRESS) {
+    throw new Error(`[Judgix] ${functionName} aborted — NEXT_PUBLIC_JUDGIX_ADDRESS is empty.`);
+  }
+
+  debug("preflight", {
+    address: JUDGIX_CONTRACT_ADDRESS,
+    signer: account?.address,
+    args,
+    value: (opts.value ?? 0n).toString(),
+  });
+
   const client = getClientForAccount(account);
-  const hash = await client.writeContract({
+
+  // Step 1: writeContract → returns tx hash.
+  const broadcastMs = opts.broadcastTimeoutMs ?? 30_000;
+  const writePromise = client.writeContract({
     address: JUDGIX_CONTRACT_ADDRESS,
     functionName,
     args,
     value: opts.value ?? BigInt(0),
   });
+
+  let hash: string;
+  try {
+    debug("awaiting writeContract…");
+    hash = await withTimeout(writePromise, broadcastMs, () => new TxTimeoutError(functionName, broadcastMs));
+  } catch (err) {
+    debug("writeContract REJECTED", err);
+    throw err;
+  }
+
+  debug("hash received", hash);
   opts.onHash?.(hash);
+
+  // Step 2: wait for receipt — don't fail the caller if the receipt decoder
+  // chokes; the tx is on-chain and state polls will confirm it.
   let receipt: any = null;
   try {
     receipt = await client.waitForTransactionReceipt({ hash, status: "FINALIZED" as any, retries: 200, interval: 3000 } as any);
+    debug("receipt finalized");
   } catch (err) {
     const msg = String((err as any)?.message || err);
+    debug("waitForTransactionReceipt threw", msg.slice(0, 200));
     if (!/out of bounds|position|invalid (utf-8|byte)|unexpected end/i.test(msg)) {
       throw err;
     }

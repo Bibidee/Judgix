@@ -148,21 +148,27 @@ export default function CreateCasePage() {
     });
 
     setBusy(true);
+    console.log("[Judgix /create] submitting", { id, signer: account.address, contract_payload: campaignPayload });
     try {
       setStage("Creating campaign on Judgix contract…");
-      await createCampaign(account, id, campaignPayload, {
+      const create = await createCampaign(account, id, campaignPayload, {
         onHash: h => setStage(`create_campaign broadcast · ${h.slice(0, 10)}…`),
       });
+      console.log("[Judgix /create] create_campaign tx", create.hash);
 
       setStage("Submitting sanitised evidence…");
-      await submitSanitisedEvidence(account, id, evidencePayload, {
+      const submit = await submitSanitisedEvidence(account, id, evidencePayload, {
         onHash: h => setStage(`submit_sanitised_evidence broadcast · ${h.slice(0, 10)}…`),
       });
+      console.log("[Judgix /create] submit_sanitised_evidence tx", submit.hash);
 
       await clearDraft(DRAFT_KEY);
       setCreatedId(id);
     } catch (err: any) {
-      setError(explainContractError(err));
+      console.error("[Judgix /create] failed", err);
+      const friendly = explainContractError(err);
+      const raw = String(err?.message || err);
+      setError(friendly === raw ? friendly : `${friendly}\n\nRaw: ${raw}`);
     } finally {
       setBusy(false);
       setStage("");
@@ -294,7 +300,11 @@ export default function CreateCasePage() {
             <p className="text-sm mt-1">{stage}</p>
           </div>
         )}
-        {error && <div className="border border-raspberry/30 bg-raspberry/10 text-raspberry rounded-md p-3 text-sm">{error}</div>}
+        {error && (
+          <div className="border border-raspberry/30 bg-raspberry/10 text-raspberry rounded-md p-3 text-sm whitespace-pre-wrap">
+            {error}
+          </div>
+        )}
 
         <div className="flex justify-end">
           <button type="submit" disabled={busy || !connected} className="bg-coral text-cloud px-5 py-3 rounded-md font-medium disabled:opacity-60">
