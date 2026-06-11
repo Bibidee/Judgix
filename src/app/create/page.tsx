@@ -184,10 +184,16 @@ export default function CreateCasePage() {
           The campaign is on-chain with sanitised evidence attached and is <strong>READY_FOR_REVIEW</strong>.
           Anyone — including you — can now trigger GenLayer consensus review by paying the protocol's review fee.
         </p>
-        <div className="flex justify-center gap-3 mt-4">
+        <div className="flex justify-center gap-3 mt-4 flex-wrap">
           <button onClick={() => router.push(`/campaigns/${createdId}`)} className="bg-plum text-cloud px-4 py-2 rounded-md">Open trust report</button>
+          <button onClick={() => router.push("/creator")} className="border border-mist px-4 py-2 rounded-md">Your docket</button>
           <button onClick={() => router.push("/campaigns")} className="border border-mist px-4 py-2 rounded-md">All trust reports</button>
         </div>
+        <p className="text-xs text-slate mt-6 max-w-xl mx-auto">
+          Public <Link href="/campaigns" className="underline">trust reports</Link> only show case files that already
+          have a GenLayer consensus verdict on file. Your case file lives in <Link href="/creator" className="underline">your docket</Link>
+          {" "}until anyone (you, the admin, or any wallet) pays the review fee to trigger consensus.
+        </p>
       </div>
     );
   }

@@ -5,7 +5,7 @@ import { WalletButton } from "@/components/wallet/WalletButton";
 import { useWallet } from "@/lib/wallet/WalletProvider";
 
 export function TopNav() {
-  const { isOwner } = useWallet();
+  const { isOwner, connected } = useWallet();
   return (
     <header className="border-b border-mist bg-plum text-cloud">
       <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
@@ -19,6 +19,7 @@ export function TopNav() {
         <nav className="hidden md:flex items-center gap-7 text-sm">
           <Link href="/campaigns" className="hover:text-cyan">Trust Reports</Link>
           <Link href="/create" className="hover:text-cyan">Open Case</Link>
+          {connected && <Link href="/creator" className="hover:text-cyan">Your Docket</Link>}
           {isOwner && (
             <Link href="/admin" className="hover:text-cyan flex items-center gap-2">
               Admin
