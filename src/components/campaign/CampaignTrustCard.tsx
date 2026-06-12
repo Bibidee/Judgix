@@ -22,6 +22,29 @@ function chip({ color, bg }: { color: string; bg: string }, label: string) {
   );
 }
 
+function statusStyle(status: string): { color: string; bg: string } {
+  switch (status) {
+    case "CANCELLED": return { color: "#FFFFFF", bg: "#6D5A7D" };
+    case "READY_FOR_REVIEW": return { color: "#7A4E00", bg: "#FFD166" };
+    case "UNDER_REVIEW": return { color: "#FFFFFF", bg: "#22D3EE" };
+    case "CREATED":
+    case "EVIDENCE_COMMITTED":
+    case "EVIDENCE_REVEALED":
+      return { color: "#171321", bg: "#F2E9FF" };
+    case "FLAGGED": return { color: "#FFFFFF", bg: "#D90368" };
+    case "APPEALED":
+    case "APPEAL_EVIDENCE_COMMITTED":
+    case "APPEAL_EVIDENCE_REVEALED":
+    case "READY_FOR_APPEAL_REVIEW":
+      return { color: "#7A4E00", bg: "#FFD166" };
+    case "HIDDEN":
+    case "SPAM":
+      return { color: "#FFFFFF", bg: "#24162F" };
+    default:
+      return { color: "#171321", bg: "#DCE9F2" };
+  }
+}
+
 export function CampaignTrustCard({ campaign, verdict }: { campaign: Campaign; verdict?: Verdict }) {
   const decisionStyle = verdict ? DECISION_STYLE[verdict.decision] : { color: "#171321", bg: "#DCE9F2" };
   const riskStyle = verdict ? RISK_STYLE[verdict.donorRiskLevel] : { color: "#171321", bg: "#DCE9F2" };
@@ -33,7 +56,9 @@ export function CampaignTrustCard({ campaign, verdict }: { campaign: Campaign; v
           <div className="case-stamp text-slate">{campaign.id} · {campaign.category}</div>
           <h3 className="font-serif-display text-xl mt-1 text-deeptext line-clamp-2">{campaign.title}</h3>
         </div>
-        {verdict && chip(decisionStyle, verdict.decision.replace(/_/g, " "))}
+        {verdict
+          ? chip(decisionStyle, verdict.decision.replace(/_/g, " "))
+          : chip(statusStyle(campaign.status), campaign.status.replace(/_/g, " "))}
       </div>
 
       <div className="mt-4 grid grid-cols-2 gap-3 text-sm">

@@ -122,7 +122,15 @@ export default function CampaignTrustReport({ params }: { params: Promise<{ id: 
   const isCreator = !!(connected && address && address.toLowerCase() === c.creator.toLowerCase());
   const isReadyForReview = c.status === "READY_FOR_REVIEW";
   const reviewAlreadyInFlight = IS_UNDER_REVIEW(c.status) || TERMINAL_REVIEWED(c.status);
-  const canCancel = isCreator && !["UNDER_REVIEW", "REVIEWED", "APPEALED", "APPEAL_REVIEWED"].includes(c.status);
+  // Cancel is only meaningful on the cancellable phases. Anything terminal
+  // (CANCELLED, REVIEWED, APPEAL_REVIEWED) or under review must not show
+  // the button.
+  const canCancel = isCreator && [
+    "CREATED",
+    "EVIDENCE_COMMITTED",
+    "EVIDENCE_REVEALED",
+    "READY_FOR_REVIEW",
+  ].includes(c.status);
   const reviewStatusMsg = TX_STATE_MESSAGES[reviewState];
 
   async function onTriggerReview() {
@@ -218,15 +226,44 @@ export default function CampaignTrustReport({ params }: { params: Promise<{ id: 
     }
   }
 
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelStage, setCancelStage] = useState("");
+
   async function onCancel() {
-    if (!sendWrite) return;
+    if (!sendWrite || !c) return;
     setError("");
+    setCancelling(true);
+    setCancelStage("Confirm cancel_campaign in your wallet…");
     try {
-      await cancelCampaign(sendWrite, c!.id);
-      const fresh = await fetchCampaign(c!.id);
-      if (fresh) setC(fresh);
+      try {
+        await cancelCampaign(sendWrite, c.id, {
+          onHash: h => setCancelStage(`cancel_campaign broadcast · ${h.slice(0, 10)}…`),
+        });
+      } catch (err) {
+        if (err instanceof TxHashTimeoutError) {
+          setCancelStage("Hash not returned yet · polling on-chain status…");
+        } else { throw err; }
+      }
+
+      // Poll until status shows CANCELLED — handles both the happy path and
+      // the no-hash-but-tx-landed path.
+      const cancelled = await pollForReview(
+        async () => {
+          const fresh = await fetchCampaign(c.id).catch(() => null);
+          if (!fresh) return null;
+          if (fresh.status !== c.status) setC(fresh);
+          return fresh.status === "CANCELLED" ? fresh : null;
+        },
+        { intervalMs: 5000, timeoutMs: 240_000 },
+      );
+      if (!cancelled) {
+        setError("Cancel transaction may still be processing — refresh in a moment.");
+      }
     } catch (err) {
       setError(explainContractError(err));
+    } finally {
+      setCancelling(false);
+      setCancelStage("");
     }
   }
 
@@ -280,9 +317,14 @@ export default function CampaignTrustReport({ params }: { params: Promise<{ id: 
             </Link>
           )}
           {canCancel && (
-            <button onClick={onCancel} className="border border-raspberry text-raspberry px-4 py-2 rounded-md text-sm">
-              Cancel campaign
+            <button onClick={onCancel} disabled={cancelling} className="border border-raspberry text-raspberry px-4 py-2 rounded-md text-sm disabled:opacity-60">
+              {cancelling ? (cancelStage || "Cancelling…") : "Cancel campaign"}
             </button>
+          )}
+          {c.status === "CANCELLED" && (
+            <span className="case-stamp text-raspberry border border-raspberry/40 px-3 py-2 rounded-md">
+              Cancelled · final
+            </span>
           )}
         </div>
 

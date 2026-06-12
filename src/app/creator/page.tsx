@@ -21,6 +21,7 @@ export default function CreatorDashboard() {
   const [verdicts, setVerdicts] = useState<Record<string, Verdict>>({});
   const [reputation, setReputation] = useState<CreatorReputation | null>(null);
   const [loading, setLoading] = useState(true);
+  const [showCancelled, setShowCancelled] = useState(false);
 
   useEffect(() => {
     if (!address) { setLoading(false); return; }
@@ -120,24 +121,62 @@ export default function CreatorDashboard() {
           </Link>
         </div>
 
-        {loading ? (
-          <div className="paper-card mt-6 p-12 text-center case-stamp text-slate">
-            Loading your case files from the contract…
-          </div>
-        ) : campaigns.length === 0 ? (
-          <EmptyState
-            eyebrow="No case files yet"
-            title="You haven&apos;t opened a case file."
-            description="Once you submit a campaign it will appear here regardless of status — drafts, awaiting review, reviewed, or appealed."
-            primaryAction={{ href: "/create", label: "Open a case file" }}
-            secondaryAction={{ href: "/campaigns", label: "Browse public trust reports" }}
-          />
-        ) : (
-          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-5 mt-6">
-            {campaigns.map(c => <CampaignTrustCard key={c.id} campaign={c} verdict={verdicts[c.id]} />)}
-          </div>
-        )}
+        {(() => {
+          const cancelledCount = campaigns.filter(c => c.status === "CANCELLED").length;
+          const visible = showCancelled ? campaigns : campaigns.filter(c => c.status !== "CANCELLED");
+          return (
+            <>
+              {cancelledCount > 0 && (
+                <div className="paper-card mt-6 p-3 flex items-center justify-between text-sm">
+                  <div className="case-stamp text-slate">
+                    {cancelledCount} cancelled case file{cancelledCount === 1 ? "" : "s"} hidden
+                  </div>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={showCancelled} onChange={e => setShowCancelled(e.target.checked)} />
+                    <span className="case-stamp text-evidence">Show cancelled</span>
+                  </label>
+                </div>
+              )}
+
+              {loading ? (
+                <div className="paper-card mt-6 p-12 text-center case-stamp text-slate">
+                  Loading your case files from the contract…
+                </div>
+              ) : visible.length === 0 ? (
+                campaigns.length === 0 ? (
+                  <EmptyState
+                    eyebrow="No case files yet"
+                    title="You haven&apos;t opened a case file."
+                    description="Once you submit a campaign it will appear here regardless of status — drafts, awaiting review, reviewed, or appealed."
+                    primaryAction={{ href: "/create", label: "Open a case file" }}
+                    secondaryAction={{ href: "/campaigns", label: "Browse public trust reports" }}
+                  />
+                ) : (
+                  <EmptyState
+                    eyebrow="Only cancelled case files"
+                    title="Every case file you have is cancelled."
+                    description="Toggle &quot;Show cancelled&quot; above to see them, or open a new case file."
+                    primaryAction={{ href: "/create", label: "Open a case file" }}
+                  />
+                )
+              ) : (
+                <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-5 mt-6">
+                  {visible.map(c => <CampaignTrustCard key={c.id} campaign={c} verdict={verdicts[c.id]} />)}
+                </div>
+              )}
+            </>
+          );
+        })()}
       </section>
+
+      <PaperCard eyebrow="What you can do with a case file" title="Edit, cancel, and reviewed campaigns">
+        <ul className="text-sm space-y-2 text-deeptext/85">
+          <li>· Case files on Judgix are <strong>immutable on-chain</strong>. The contract does not expose an edit method, so the title, story, evidence and goal cannot be changed once submitted.</li>
+          <li>· If you opened a case file by mistake or twice, <strong>cancel it</strong> from its trust report before review is triggered. Cancelled case files are hidden here by default.</li>
+          <li>· Once a case file is <strong>under review or reviewed</strong>, it cannot be cancelled, edited or removed. The GenLayer verdict is the public record.</li>
+          <li>· If you spot factual issues with a reviewed case file, file an <strong>appeal</strong> with new sanitised evidence — the appeal flow re-runs consensus instead of editing the original record.</li>
+        </ul>
+      </PaperCard>
 
       <p className="text-xs text-slate text-center">
         Public trust reports at <Link href="/campaigns" className="underline">/campaigns</Link> only show case files
