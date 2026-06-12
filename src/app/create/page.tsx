@@ -232,13 +232,13 @@ export default function CreateCasePage() {
               {createTxHash && (
                 <div className="flex flex-col">
                   <div className="case-stamp text-slate">create_campaign</div>
-                  <div className="font-mono break-all">{createTxHash}</div>
+                  <TxLink hash={createTxHash} />
                 </div>
               )}
               {evidenceTxHash && (
                 <div className="flex flex-col">
                   <div className="case-stamp text-slate">submit_sanitised_evidence</div>
-                  <div className="font-mono break-all">{evidenceTxHash}</div>
+                  <TxLink hash={evidenceTxHash} />
                 </div>
               )}
             </div>
@@ -426,8 +426,22 @@ function TxRow({ label, hash, stage }: { label: string; hash: string | null; sta
         <div className="case-stamp" style={{ color: colour }}>{status}</div>
       </div>
       <div className="font-mono text-xs break-all max-w-[55%] text-right">
-        {hash ?? "—"}
+        {hash ? <TxLink hash={hash} /> : "—"}
       </div>
     </div>
+  );
+}
+
+function TxLink({ hash, className = "" }: { hash: string; className?: string }) {
+  return (
+    <a
+      href={`https://explorer-studio.genlayer.com/tx/${hash}`}
+      target="_blank"
+      rel="noreferrer"
+      className={`text-evidence hover:underline font-mono break-all ${className}`}
+      title="Open in Studio Explorer"
+    >
+      {hash}
+    </a>
   );
 }

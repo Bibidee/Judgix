@@ -290,7 +290,11 @@ export default function CampaignTrustReport({ params }: { params: Promise<{ id: 
           <div className="mt-4 border border-cyan/40 bg-cyan/10 text-deeptext rounded-md p-3 text-sm">
             <div className="case-stamp text-evidence">{reviewState.replace(/_/g, " ")}</div>
             <p className="mt-1">{reviewStatusMsg}</p>
-            {reviewTxHash && <div className="font-mono text-xs text-slate mt-1 break-all">tx · {reviewTxHash}</div>}
+            {reviewTxHash && (
+              <div className="font-mono text-xs text-slate mt-1 break-all">
+                tx · <a href={`https://explorer-studio.genlayer.com/tx/${reviewTxHash}`} target="_blank" rel="noreferrer" className="text-evidence hover:underline">{reviewTxHash}</a>
+              </div>
+            )}
           </div>
         )}
 
@@ -305,7 +309,11 @@ export default function CampaignTrustReport({ params }: { params: Promise<{ id: 
           <div className="mt-4 border border-apricot bg-apricot/10 text-deeptext rounded-md p-3 text-sm">
             <div className="case-stamp text-[#7A4E00]">PROCESSING</div>
             <p className="mt-1">{TX_STATE_MESSAGES.CONSENSUS_TIMEOUT}</p>
-            {reviewTxHash && <div className="font-mono text-xs text-slate mt-1 break-all">tx · {reviewTxHash}</div>}
+            {reviewTxHash && (
+              <div className="font-mono text-xs text-slate mt-1 break-all">
+                tx · <a href={`https://explorer-studio.genlayer.com/tx/${reviewTxHash}`} target="_blank" rel="noreferrer" className="text-evidence hover:underline">{reviewTxHash}</a>
+              </div>
+            )}
           </div>
         )}
 
