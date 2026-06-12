@@ -277,9 +277,20 @@ export default function CreateCasePage() {
               </select>
             </Field>
             <Field label="Funding goal *">
-              <div className="flex gap-2">
-                <input className="input flex-1" type="number" min="1" value={fundingGoal} onChange={e => setFundingGoal(e.target.value)} />
-                <select className="input w-28" value={currency} onChange={e => setCurrency(e.target.value)}>
+              <div className="grid grid-cols-3 gap-2">
+                <input
+                  className="input col-span-2 min-w-0"
+                  type="number"
+                  min="1"
+                  inputMode="numeric"
+                  value={fundingGoal}
+                  onChange={e => setFundingGoal(e.target.value)}
+                />
+                <select
+                  className="input col-span-1 min-w-0"
+                  value={currency}
+                  onChange={e => setCurrency(e.target.value)}
+                >
                   {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
               </div>
