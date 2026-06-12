@@ -15,10 +15,39 @@ import {
   triggerReview,
   cancelCampaign,
   explainContractError,
+  TxHashTimeoutError,
 } from "@/lib/genlayer/contract";
 import { Campaign, Verdict, SanitisedEvidence, CreatorReputation, Decision, DonorRiskLevel } from "@/types";
 import { useWallet } from "@/lib/wallet/WalletProvider";
 import { pollForReview } from "@/lib/genlayer/sdk";
+
+// States the Trigger Review action moves through. The UI message is derived
+// from this so we never hard-error on a tx that may still be in flight.
+type ReviewTxState =
+  | "IDLE"
+  | "SIGNING"
+  | "BROADCASTING"
+  | "TX_HASH_RECEIVED"
+  | "TX_MAY_HAVE_SUBMITTED"
+  | "WAITING_FOR_CONSENSUS"
+  | "REVIEWED"
+  | "CONSENSUS_TIMEOUT"
+  | "FAILED";
+
+const TX_STATE_MESSAGES: Record<ReviewTxState, string> = {
+  IDLE: "",
+  SIGNING: "Confirm the transaction in your wallet…",
+  BROADCASTING: "Broadcasting trigger_review to the Studio Network…",
+  TX_HASH_RECEIVED: "Transaction submitted. Waiting for GenLayer validators to finalize the review.",
+  TX_MAY_HAVE_SUBMITTED: "We could not read the transaction hash yet. The transaction may still have been submitted. Checking on-chain status…",
+  WAITING_FOR_CONSENSUS: "Review is on-chain and waiting for GenLayer consensus.",
+  REVIEWED: "GenLayer review finalized.",
+  CONSENSUS_TIMEOUT: "The review transaction may still be processing. Check the explorer or refresh later.",
+  FAILED: "",
+};
+
+const TERMINAL_REVIEWED = (s: string) => s === "REVIEWED" || s === "APPEAL_REVIEWED";
+const IS_UNDER_REVIEW = (s: string) => s === "UNDER_REVIEW";
 
 const DECISION_COLOR: Record<Decision, string> = {
   verified: "#0F5E4A",
@@ -53,9 +82,14 @@ export default function CampaignTrustReport({ params }: { params: Promise<{ id: 
 
   const [loading, setLoading] = useState(true);
   const [notFoundState, setNotFoundState] = useState(false);
-  const [triggering, setTriggering] = useState(false);
-  const [triggerStage, setTriggerStage] = useState("");
+  const [reviewState, setReviewState] = useState<ReviewTxState>("IDLE");
+  const [reviewTxHash, setReviewTxHash] = useState<string | null>(null);
   const [error, setError] = useState("");
+
+  const triggering = reviewState !== "IDLE"
+    && reviewState !== "REVIEWED"
+    && reviewState !== "CONSENSUS_TIMEOUT"
+    && reviewState !== "FAILED";
 
   useEffect(() => {
     let cancelled = false;
@@ -87,28 +121,100 @@ export default function CampaignTrustReport({ params }: { params: Promise<{ id: 
 
   const isCreator = !!(connected && address && address.toLowerCase() === c.creator.toLowerCase());
   const isReadyForReview = c.status === "READY_FOR_REVIEW";
+  const reviewAlreadyInFlight = IS_UNDER_REVIEW(c.status) || TERMINAL_REVIEWED(c.status);
   const canCancel = isCreator && !["UNDER_REVIEW", "REVIEWED", "APPEALED", "APPEAL_REVIEWED"].includes(c.status);
+  const reviewStatusMsg = TX_STATE_MESSAGES[reviewState];
 
   async function onTriggerReview() {
-    if (!sendWrite) return;
+    if (!sendWrite || !c) return;
     setError("");
-    setTriggering(true);
+
+    // Pre-flight: never pay another review fee for a campaign that is
+    // already past the trigger phase.
     try {
-      setTriggerStage("Paying review fee and submitting trigger_review…");
+      const preflight = await fetchCampaign(c.id);
+      if (preflight) {
+        if (preflight.status && (TERMINAL_REVIEWED(preflight.status) || IS_UNDER_REVIEW(preflight.status))) {
+          setC(preflight);
+          const v = await fetchVerdict(c.id).catch(() => null);
+          if (v) setVerdict(v);
+          setError("Review already submitted. Waiting for GenLayer consensus.");
+          return;
+        }
+      }
+    } catch {/* noop */}
+
+    setReviewState("SIGNING");
+
+    let sawHash = false;
+
+    try {
       const fee = reviewFeeWei ?? BigInt(10_000_000_000_000_000); // 0.01 GEN fallback
-      await triggerReview(sendWrite, c!.id, fee, {
-        onHash: h => setTriggerStage(`Tx broadcast — awaiting consensus… ${h.slice(0, 10)}…`),
-      });
-      setTriggerStage("Polling for verdict…");
-      const v = await pollForReview(() => fetchVerdict(c!.id), { intervalMs: 5000, timeoutMs: 300_000 });
-      if (v) setVerdict(v);
-      const fresh = await fetchCampaign(c!.id);
-      if (fresh) setC(fresh);
+
+      // Slight UX cue: after a beat we're broadcasting, not just signing.
+      const broadcastingTimer = setTimeout(() => setReviewState(s => s === "SIGNING" ? "BROADCASTING" : s), 1500);
+
+      try {
+        await triggerReview(sendWrite, c.id, fee, {
+          onHash: h => {
+            sawHash = true;
+            console.log("[Judgix /campaigns trigger_review] tx hash", h);
+            setReviewTxHash(h);
+            setReviewState("TX_HASH_RECEIVED");
+          },
+        });
+      } finally {
+        clearTimeout(broadcastingTimer);
+      }
+
+      // If onHash never fired but writeContract returned cleanly, we still
+      // count it as submitted.
+      if (!sawHash) {
+        setReviewState("TX_MAY_HAVE_SUBMITTED");
+      }
+    } catch (err) {
+      if (err instanceof TxHashTimeoutError) {
+        // Common case: the wallet client took >30s to surface a hash but the
+        // tx may already be on-chain. Don't show "wallet never broadcast" —
+        // fall back to status polling.
+        console.warn("[Judgix /campaigns trigger_review] no hash in 30s — checking on-chain status");
+        setReviewState("TX_MAY_HAVE_SUBMITTED");
+      } else {
+        const friendly = explainContractError(err);
+        console.error("[Judgix /campaigns trigger_review] failed", err);
+        setError(friendly);
+        setReviewState("FAILED");
+        return;
+      }
+    }
+
+    // Verify on-chain that the tx made it. If status flips from
+    // READY_FOR_REVIEW → UNDER_REVIEW / REVIEWED, the submission succeeded.
+    setReviewState(s => s === "REVIEWED" ? s : "WAITING_FOR_CONSENSUS");
+    try {
+      const reviewed = await pollForReview(
+        async () => {
+          const fresh = await fetchCampaign(c.id).catch(() => null);
+          if (!fresh) return null;
+          if (fresh.status !== c.status) setC(fresh);
+          if (TERMINAL_REVIEWED(fresh.status)) {
+            const v = await fetchVerdict(c.id).catch(() => null);
+            if (v) { setVerdict(v); return v; }
+          }
+          return null;
+        },
+        { intervalMs: 10_000, timeoutMs: 900_000 }, // up to 15 minutes
+      );
+      if (reviewed) {
+        setReviewState("REVIEWED");
+        return;
+      }
+      // Fallback: still no verdict but maybe consensus is mid-flight. We're
+      // done blocking — user can wait or refresh.
+      setReviewState("CONSENSUS_TIMEOUT");
     } catch (err) {
       setError(explainContractError(err));
-    } finally {
-      setTriggering(false);
-      setTriggerStage("");
+      setReviewState("FAILED");
     }
   }
 
@@ -147,14 +253,26 @@ export default function CampaignTrustReport({ params }: { params: Promise<{ id: 
           <MonoStat label="Created" value={c.createdAt ? formatDate(c.createdAt) : "—"} />
         </div>
         <div className="mt-5 flex flex-wrap gap-3">
-          {isReadyForReview && (
+          {isReadyForReview && !reviewAlreadyInFlight && (
             <button
               onClick={onTriggerReview}
               disabled={triggering || !connected}
               className="bg-coral text-cloud px-4 py-2 rounded-md text-sm font-medium disabled:opacity-60"
             >
-              {triggering ? (triggerStage || "Triggering…") : `Trigger GenLayer review · ${weiLabel(reviewFeeWei)}`}
+              {triggering
+                ? (reviewState === "SIGNING" ? "Confirm in wallet…"
+                  : reviewState === "BROADCASTING" ? "Broadcasting…"
+                  : reviewState === "TX_HASH_RECEIVED" ? "Submitted · waiting for consensus…"
+                  : reviewState === "TX_MAY_HAVE_SUBMITTED" ? "Checking on-chain status…"
+                  : reviewState === "WAITING_FOR_CONSENSUS" ? "Waiting for consensus…"
+                  : "Working…")
+                : `Trigger GenLayer review · ${weiLabel(reviewFeeWei)}`}
             </button>
+          )}
+          {reviewAlreadyInFlight && (
+            <span className="case-stamp text-evidence border border-evidence/40 px-3 py-2 rounded-md">
+              {IS_UNDER_REVIEW(c.status) ? "Awaiting GenLayer consensus" : "Reviewed"}
+            </span>
           )}
           {connected && (
             <Link href={`/campaigns/${c.id}/flag`} className="border border-mist text-deeptext px-4 py-2 rounded-md text-sm hover:border-raspberry hover:text-raspberry">
@@ -167,7 +285,31 @@ export default function CampaignTrustReport({ params }: { params: Promise<{ id: 
             </button>
           )}
         </div>
-        {error && <div className="mt-4 border border-raspberry/30 bg-raspberry/10 text-raspberry rounded-md p-3 text-sm">{error}</div>}
+
+        {triggering && reviewStatusMsg && (
+          <div className="mt-4 border border-cyan/40 bg-cyan/10 text-deeptext rounded-md p-3 text-sm">
+            <div className="case-stamp text-evidence">{reviewState.replace(/_/g, " ")}</div>
+            <p className="mt-1">{reviewStatusMsg}</p>
+            {reviewTxHash && <div className="font-mono text-xs text-slate mt-1 break-all">tx · {reviewTxHash}</div>}
+          </div>
+        )}
+
+        {reviewState === "REVIEWED" && (
+          <div className="mt-4 border border-mint/50 bg-mint/20 text-deeptext rounded-md p-3 text-sm">
+            <div className="case-stamp text-[#0F5E4A]">REVIEWED</div>
+            <p className="mt-1">{TX_STATE_MESSAGES.REVIEWED}</p>
+          </div>
+        )}
+
+        {reviewState === "CONSENSUS_TIMEOUT" && (
+          <div className="mt-4 border border-apricot bg-apricot/10 text-deeptext rounded-md p-3 text-sm">
+            <div className="case-stamp text-[#7A4E00]">PROCESSING</div>
+            <p className="mt-1">{TX_STATE_MESSAGES.CONSENSUS_TIMEOUT}</p>
+            {reviewTxHash && <div className="font-mono text-xs text-slate mt-1 break-all">tx · {reviewTxHash}</div>}
+          </div>
+        )}
+
+        {error && <div className="mt-4 border border-raspberry/30 bg-raspberry/10 text-raspberry rounded-md p-3 text-sm whitespace-pre-wrap">{error}</div>}
       </header>
 
       {verdict ? (

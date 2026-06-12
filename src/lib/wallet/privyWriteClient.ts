@@ -36,6 +36,28 @@ import { JUDGIX_CONTRACT_ADDRESS } from "@/lib/genlayer/sdk";
 
 const STUDIO_CHAIN_ID = 61999;
 
+/**
+ * Extract a tx hash from whatever shape the wallet client returned.
+ * Privy's `useSendTransaction` has shipped at least three result shapes
+ * across versions: a bare hex string, `{ hash }`, and a viem-style
+ * `{ transactionHash }`. We accept all of them.
+ */
+export function extractTxHash(result: unknown): string | null {
+  if (!result) return null;
+  if (typeof result === "string") {
+    return result.startsWith("0x") ? result : null;
+  }
+  const r = result as any;
+  return (
+    r.hash ||
+    r.transactionHash ||
+    r.txHash ||
+    r.receipt?.transactionHash ||
+    r.transaction_hash ||
+    null
+  );
+}
+
 function consensusContract() {
   // STUDIO chain shares the same consensus contract config as localnet.
   const c = (localnet as any).consensusMainContract;
@@ -112,10 +134,11 @@ export function usePrivyWriteClient(): { sendWrite: SendWrite | null; ready: boo
       chainId: STUDIO_CHAIN_ID,
     } as any);
 
-    const hash = (result as any)?.hash ?? (typeof result === "string" ? result : null);
+    console.log("[Judgix privyWriteClient] raw sendTransaction result", result);
+    const hash = extractTxHash(result);
     if (!hash) {
-      console.error("[Judgix privyWriteClient] sendTransaction returned no hash", result);
-      throw new Error("Privy sendTransaction returned no tx hash.");
+      console.warn("[Judgix privyWriteClient] could not extract hash from result — caller must verify via on-chain status", result);
+      throw new Error("Privy sendTransaction returned no recognizable tx hash. The transaction may still have been submitted; the caller will verify by reading on-chain state.");
     }
     console.log("[Judgix privyWriteClient] tx hash", hash);
     return { hash };

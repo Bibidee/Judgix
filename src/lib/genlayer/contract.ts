@@ -40,13 +40,20 @@ async function readView(functionName: string, args: any[] = []): Promise<string>
 
 type WriteOpts = { onHash?: (hash: string) => void; value?: bigint; broadcastTimeoutMs?: number };
 
-class TxTimeoutError extends Error {
+/**
+ * Thrown when the wallet client did not return a recognizable tx hash within
+ * the broadcast timeout. The tx **may still** have reached the chain —
+ * callers should fall back to on-chain status polling before declaring the
+ * write failed.
+ */
+export class TxHashTimeoutError extends Error {
+  readonly retryable = true;
   constructor(public functionName: string, public timeoutMs: number) {
     super(
       `[Judgix] ${functionName} did not return a tx hash within ${timeoutMs}ms. ` +
-      `The wallet never broadcast. Check the browser console for "[Judgix privyWriteClient]" logs.`,
+      `The transaction may still have been submitted — caller should verify on-chain status.`,
     );
-    this.name = "TxTimeoutError";
+    this.name = "TxHashTimeoutError";
   }
 }
 
@@ -83,7 +90,7 @@ async function writeMethod(
     const { hash: h } = await withTimeout(
       sendWrite(functionName, args, { value: opts.value ?? 0n }),
       broadcastMs,
-      () => new TxTimeoutError(functionName, broadcastMs),
+      () => new TxHashTimeoutError(functionName, broadcastMs),
     );
     hash = h;
   } catch (err) {
