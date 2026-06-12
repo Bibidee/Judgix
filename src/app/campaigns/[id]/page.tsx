@@ -84,6 +84,8 @@ export default function CampaignTrustReport({ params }: { params: Promise<{ id: 
   const [notFoundState, setNotFoundState] = useState(false);
   const [reviewState, setReviewState] = useState<ReviewTxState>("IDLE");
   const [reviewTxHash, setReviewTxHash] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelStage, setCancelStage] = useState("");
   const [error, setError] = useState("");
 
   const triggering = reviewState !== "IDLE"
@@ -225,9 +227,6 @@ export default function CampaignTrustReport({ params }: { params: Promise<{ id: 
       setReviewState("FAILED");
     }
   }
-
-  const [cancelling, setCancelling] = useState(false);
-  const [cancelStage, setCancelStage] = useState("");
 
   async function onCancel() {
     if (!sendWrite || !c) return;
