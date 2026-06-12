@@ -39,7 +39,7 @@ export function CampaignTrustCard({ campaign, verdict }: { campaign: Campaign; v
       <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
         <div>
           <div className="case-stamp text-slate">Funding goal</div>
-          <div className="font-mono">${campaign.fundingGoal.toLocaleString()}</div>
+          <div className="font-mono">{campaign.currency} {campaign.fundingGoal.toLocaleString()}</div>
         </div>
         <div>
           <div className="case-stamp text-slate">Creator</div>

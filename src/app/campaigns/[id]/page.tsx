@@ -247,7 +247,7 @@ export default function CampaignTrustReport({ params }: { params: Promise<{ id: 
           <span className="case-stamp px-2 py-1 rounded border border-mist text-slate">{c.status.replace(/_/g, " ")}</span>
         </div>
         <div className="grid md:grid-cols-4 gap-3 mt-6">
-          <MonoStat label="Funding goal" value={`$${c.fundingGoal.toLocaleString()}`} />
+          <MonoStat label="Funding goal" value={`${c.currency} ${c.fundingGoal.toLocaleString()}`} />
           <MonoStat label="Creator" value={shortAddress(c.creator)} />
           <MonoStat label="Schema" value={c.schemaVersion ?? "—"} />
           <MonoStat label="Created" value={c.createdAt ? formatDate(c.createdAt) : "—"} />
@@ -339,7 +339,7 @@ export default function CampaignTrustReport({ params }: { params: Promise<{ id: 
               {c.useOfFunds.map((u, i) => (
                 <li key={i} className="py-3 flex items-center justify-between gap-4">
                   <span>{u.item}</span>
-                  <span className="font-mono">${u.amount.toLocaleString()}</span>
+                  <span className="font-mono">{c.currency} {u.amount.toLocaleString()}</span>
                 </li>
               ))}
             </ul>

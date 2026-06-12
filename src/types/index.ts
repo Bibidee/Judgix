@@ -31,6 +31,7 @@ export type Campaign = {
   title: string;
   category: string;
   fundingGoal: number;
+  currency: string;
   story: string;
   beneficiarySummary: string;
   regionSummary: string;

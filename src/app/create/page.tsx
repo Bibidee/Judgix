@@ -11,12 +11,20 @@ import {
   campaignToContractJson,
   evidenceToContractJson,
   explainContractError,
+  fetchCampaign,
+  fetchEvidence,
+  TxHashTimeoutError,
 } from "@/lib/genlayer/contract";
+import { pollForReview } from "@/lib/genlayer/sdk";
 import { saveDraft, loadDraft, clearDraft } from "@/lib/storage/drafts";
 
 const CATEGORIES = [
   "medical", "education", "emergency", "community", "disaster_relief",
   "funeral", "animal_rescue", "public_good", "charity", "other",
+];
+
+const CURRENCIES = [
+  "USD", "EUR", "GBP", "NGN", "KES", "GHS", "ZAR", "EGP", "INR", "PHP", "BRL", "MXN", "GEN",
 ];
 
 const PROOF_TYPES = [
@@ -30,7 +38,7 @@ type UseOfFundsRow = { item: string; amount: string };
 const DRAFT_KEY = "create.form.v2";
 
 type Draft = {
-  title: string; category: string; story: string; fundingGoal: string;
+  title: string; category: string; story: string; fundingGoal: string; currency: string;
   beneficiarySummary: string; regionSummary: string; useOfFunds: UseOfFundsRow[];
   timeline: string; publicProofLinks: string; riskDisclosure: string;
   evidenceSummary: string; proofType: string; thirdPartyVerification: string;
@@ -48,6 +56,7 @@ export default function CreateCasePage() {
   const [category, setCategory] = useState("medical");
   const [story, setStory] = useState("");
   const [fundingGoal, setFundingGoal] = useState("");
+  const [currency, setCurrency] = useState("USD");
   const [beneficiarySummary, setBeneficiarySummary] = useState("");
   const [regionSummary, setRegionSummary] = useState("");
   const [useOfFunds, setUseOfFunds] = useState<UseOfFundsRow[]>([emptyRow()]);
@@ -66,6 +75,8 @@ export default function CreateCasePage() {
   const [consent, setConsent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [stage, setStage] = useState("");
+  const [createTxHash, setCreateTxHash] = useState<string | null>(null);
+  const [evidenceTxHash, setEvidenceTxHash] = useState<string | null>(null);
   const [createdId, setCreatedId] = useState<string | null>(null);
   const [error, setError] = useState("");
 
@@ -75,7 +86,8 @@ export default function CreateCasePage() {
       const d = await loadDraft<Draft>(DRAFT_KEY);
       if (!d) return;
       setTitle(d.title); setCategory(d.category); setStory(d.story);
-      setFundingGoal(d.fundingGoal); setBeneficiarySummary(d.beneficiarySummary);
+      setFundingGoal(d.fundingGoal); if (d.currency) setCurrency(d.currency);
+      setBeneficiarySummary(d.beneficiarySummary);
       setRegionSummary(d.regionSummary); setTimeline(d.timeline);
       setPublicProofLinks(d.publicProofLinks); setRiskDisclosure(d.riskDisclosure);
       if (Array.isArray(d.useOfFunds) && d.useOfFunds.length) setUseOfFunds(d.useOfFunds);
@@ -92,14 +104,14 @@ export default function CreateCasePage() {
   useEffect(() => {
     const t = setTimeout(() => {
       saveDraft(DRAFT_KEY, {
-        title, category, story, fundingGoal, beneficiarySummary, regionSummary,
+        title, category, story, fundingGoal, currency, beneficiarySummary, regionSummary,
         useOfFunds, timeline, publicProofLinks, riskDisclosure,
         evidenceSummary, proofType, thirdPartyVerification, socialProofSummary,
         beneficiaryRelationship, redactionStatement, documentHash,
       });
     }, 400);
     return () => clearTimeout(t);
-  }, [title, category, story, fundingGoal, beneficiarySummary, regionSummary,
+  }, [title, category, story, fundingGoal, currency, beneficiarySummary, regionSummary,
       useOfFunds, timeline, publicProofLinks, riskDisclosure,
       evidenceSummary, proofType, thirdPartyVerification, socialProofSummary,
       beneficiaryRelationship, redactionStatement, documentHash]);
@@ -130,7 +142,7 @@ export default function CreateCasePage() {
     const id = `JDX-${Date.now().toString(36).toUpperCase()}`;
 
     const campaignPayload = campaignToContractJson({
-      title, category, story, fundingGoal: goal,
+      title, category, story, fundingGoal: goal, currency,
       beneficiarySummary, regionSummary, timeline,
       useOfFunds: useOfFunds
         .filter(r => r.item.trim() && r.amount.trim())
@@ -148,24 +160,42 @@ export default function CreateCasePage() {
     });
 
     setBusy(true);
-    console.log("[Judgix /create] submitting", { id, signer: address, contract_payload: campaignPayload });
-    try {
-      setStage("Creating campaign on Judgix contract…");
-      const create = await createCampaign(sendWrite, id, campaignPayload, {
-        onHash: h => setStage(`create_campaign broadcast · ${h.slice(0, 10)}…`),
-      });
-      console.log("[Judgix /create] create_campaign tx", create.hash);
+    setCreateTxHash(null);
+    setEvidenceTxHash(null);
 
+    try {
+      // ---------------- create_campaign ----------------
+      setStage("Creating campaign on Judgix contract…");
+      try {
+        await createCampaign(sendWrite, id, campaignPayload, {
+          onHash: h => { setCreateTxHash(h); setStage(`create_campaign broadcast · ${h.slice(0, 10)}…`); },
+        });
+      } catch (err) {
+        if (err instanceof TxHashTimeoutError) {
+          // Privy may not have returned a hash, but the tx may still be on-chain.
+          setStage("create_campaign: hash not returned yet · checking on-chain status…");
+          const found = await pollForReview(() => fetchCampaign(id), { intervalMs: 5000, timeoutMs: 240_000 });
+          if (!found) throw new Error("Campaign did not appear on-chain within 4 minutes. The transaction may still be processing — refresh later.");
+        } else { throw err; }
+      }
+
+      // ---------------- submit_sanitised_evidence ----------------
       setStage("Submitting sanitised evidence…");
-      const submit = await submitSanitisedEvidence(sendWrite, id, evidencePayload, {
-        onHash: h => setStage(`submit_sanitised_evidence broadcast · ${h.slice(0, 10)}…`),
-      });
-      console.log("[Judgix /create] submit_sanitised_evidence tx", submit.hash);
+      try {
+        await submitSanitisedEvidence(sendWrite, id, evidencePayload, {
+          onHash: h => { setEvidenceTxHash(h); setStage(`submit_sanitised_evidence broadcast · ${h.slice(0, 10)}…`); },
+        });
+      } catch (err) {
+        if (err instanceof TxHashTimeoutError) {
+          setStage("submit_sanitised_evidence: hash not returned yet · checking on-chain status…");
+          const found = await pollForReview(() => fetchEvidence(id), { intervalMs: 5000, timeoutMs: 240_000 });
+          if (!found) throw new Error("Sanitised evidence did not appear on-chain within 4 minutes. The transaction may still be processing — refresh later.");
+        } else { throw err; }
+      }
 
       await clearDraft(DRAFT_KEY);
       setCreatedId(id);
     } catch (err: any) {
-      console.error("[Judgix /create] failed", err);
       const friendly = explainContractError(err);
       const raw = String(err?.message || err);
       setError(friendly === raw ? friendly : `${friendly}\n\nRaw: ${raw}`);
@@ -194,6 +224,26 @@ export default function CreateCasePage() {
           have a GenLayer consensus verdict on file. Your case file lives in <Link href="/creator" className="underline">your docket</Link>
           {" "}until anyone (you, the admin, or any wallet) pays the review fee to trigger consensus.
         </p>
+
+        {(createTxHash || evidenceTxHash) && (
+          <div className="paper-card p-4 mt-6 max-w-2xl mx-auto text-left">
+            <div className="case-stamp text-evidence">Transaction trail</div>
+            <div className="mt-3 space-y-2 text-xs">
+              {createTxHash && (
+                <div className="flex flex-col">
+                  <div className="case-stamp text-slate">create_campaign</div>
+                  <div className="font-mono break-all">{createTxHash}</div>
+                </div>
+              )}
+              {evidenceTxHash && (
+                <div className="flex flex-col">
+                  <div className="case-stamp text-slate">submit_sanitised_evidence</div>
+                  <div className="font-mono break-all">{evidenceTxHash}</div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -226,8 +276,15 @@ export default function CreateCasePage() {
                 {CATEGORIES.map(c => <option key={c} value={c}>{c.replace(/_/g, " ")}</option>)}
               </select>
             </Field>
-            <Field label="Funding goal (USD) *"><input className="input" type="number" min="1" value={fundingGoal} onChange={e => setFundingGoal(e.target.value)} /></Field>
-            <Field label="Region summary *"><input className="input" placeholder="Lagos, Nigeria" value={regionSummary} onChange={e => setRegionSummary(e.target.value)} /></Field>
+            <Field label="Funding goal *">
+              <div className="flex gap-2">
+                <input className="input flex-1" type="number" min="1" value={fundingGoal} onChange={e => setFundingGoal(e.target.value)} />
+                <select className="input w-28" value={currency} onChange={e => setCurrency(e.target.value)}>
+                  {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+            </Field>
+            <Field label="Region summary *"><input className="input" value={regionSummary} onChange={e => setRegionSummary(e.target.value)} /></Field>
             <Field label="Beneficiary summary *" className="md:col-span-2">
               <input className="input" placeholder="e.g. Adult community teacher, identity partially redacted" value={beneficiarySummary} onChange={e => setBeneficiarySummary(e.target.value)} />
             </Field>
@@ -245,7 +302,7 @@ export default function CreateCasePage() {
             {useOfFunds.map((r, i) => (
               <div key={i} className="grid grid-cols-12 gap-2 items-end">
                 <div className="col-span-7"><Field label="Item"><input className="input" value={r.item} onChange={e => setRow(i, "item", e.target.value)} /></Field></div>
-                <div className="col-span-4"><Field label="Amount (USD)"><input className="input" type="number" value={r.amount} onChange={e => setRow(i, "amount", e.target.value)} /></Field></div>
+                <div className="col-span-4"><Field label={`Amount (${currency})`}><input className="input" type="number" value={r.amount} onChange={e => setRow(i, "amount", e.target.value)} /></Field></div>
                 {useOfFunds.length > 1 && <button type="button" onClick={() => removeRow(i)} className="case-stamp text-raspberry col-span-1">Remove</button>}
               </div>
             ))}
@@ -300,11 +357,18 @@ export default function CreateCasePage() {
           </label>
         </PaperCard>
 
-        {busy && stage && (
-          <div className="paper-card p-4 border-cyan/40">
-            <div className="case-stamp text-evidence">Working</div>
-            <p className="text-sm mt-1">{stage}</p>
-          </div>
+        {(busy || createTxHash || evidenceTxHash) && (
+          <PaperCard eyebrow="Transaction trail" title="On-chain submission">
+            {stage && <p className="text-sm mb-3">{stage}</p>}
+            <div className="space-y-3 text-xs">
+              <TxRow label="create_campaign" hash={createTxHash} stage={stage} />
+              <TxRow label="submit_sanitised_evidence" hash={evidenceTxHash} stage={stage} />
+            </div>
+            <p className="text-xs text-slate mt-3">
+              Tx hashes are surfaced as soon as the wallet returns them. If a hash takes longer than 30 seconds we
+              fall back to reading on-chain state directly, so the case file lands even when the wallet response is delayed.
+            </p>
+          </PaperCard>
         )}
         {error && (
           <div className="border border-raspberry/30 bg-raspberry/10 text-raspberry rounded-md p-3 text-sm whitespace-pre-wrap">
@@ -337,5 +401,22 @@ function Field({ label, children, className = "" }: { label: string; children: R
       <span className="case-stamp text-slate">{label}</span>
       <div className="mt-1">{children}</div>
     </label>
+  );
+}
+
+function TxRow({ label, hash, stage }: { label: string; hash: string | null; stage: string }) {
+  const isInFlight = stage.toLowerCase().includes(label.toLowerCase());
+  const status = hash ? "broadcast" : isInFlight ? "in-flight" : "queued";
+  const colour = hash ? "#0F5E4A" : isInFlight ? "#7A4E00" : "#6D5A7D";
+  return (
+    <div className="flex items-center justify-between gap-2 border border-mist rounded-md px-3 py-2">
+      <div>
+        <div className="case-stamp text-slate">{label}</div>
+        <div className="case-stamp" style={{ color: colour }}>{status}</div>
+      </div>
+      <div className="font-mono text-xs break-all max-w-[55%] text-right">
+        {hash ?? "—"}
+      </div>
+    </div>
   );
 }
